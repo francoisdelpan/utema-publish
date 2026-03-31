@@ -1,0 +1,10 @@
+{
+  "id": "utema-publish",
+  "name": "UTEMA Publish",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Convertit les liens wiki d'un dossier puis publie les changements via Git local.",
+  "author": "UTEMA",
+  "authorUrl": "",
+  "isDesktopOnly": true
+}
