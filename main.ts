@@ -4,6 +4,8 @@ import {
   FileSystemAdapter,
   Notice,
   Plugin,
+  TFolder,
+  TFile,
   normalizePath,
 } from "obsidian";
 import { CommitModal } from "./commitModal";
@@ -35,6 +37,14 @@ export default class UtemaPublishPlugin extends Plugin {
       },
     });
 
+    this.addCommand({
+      id: "utema-move-active-file-to-auto-folder",
+      name: "UTEMA Move Active File To Auto Folder",
+      callback: () => {
+        void this.moveActiveFileToAutoFolder();
+      },
+    });
+
     this.addSettingTab(new UtemaPublishSettingTab(this.app, this));
   }
 
@@ -48,6 +58,38 @@ export default class UtemaPublishPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+  }
+
+  private async moveActiveFileToAutoFolder(): Promise<void> {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile) {
+      new Notice("Aucun fichier actif à déplacer.");
+      return;
+    }
+
+    const autoMoveFolder = normalizePath(this.settings.autoMoveFolder.trim());
+    if (!autoMoveFolder) {
+      new Notice("Le dossier 'Auto moving files folder' n'est pas configuré.");
+      return;
+    }
+
+    try {
+      await ensureVaultFolderExists(this.app, autoMoveFolder);
+
+      const destinationPath = await this.getAvailableDestinationPath(activeFile, autoMoveFolder);
+      if (destinationPath === activeFile.path) {
+        new Notice("Le fichier est déjà dans le dossier cible.");
+        return;
+      }
+
+      await this.app.fileManager.renameFile(activeFile, destinationPath);
+      new Notice(`Fichier déplacé vers ${destinationPath}.`);
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : "Impossible de déplacer le fichier actif.";
+      new Notice(message, 10000);
+    }
   }
 
   private async runSyncWorkflow(commitMessage: string): Promise<void> {
@@ -149,6 +191,32 @@ export default class UtemaPublishPlugin extends Plugin {
 
     return "Une erreur inconnue est survenue pendant la synchronisation.";
   }
+
+  private async getAvailableDestinationPath(
+    file: TFile,
+    targetFolder: string,
+  ): Promise<string> {
+    const extensionSuffix = file.extension ? `.${file.extension}` : "";
+    const baseName = extensionSuffix
+      ? file.name.slice(0, -extensionSuffix.length)
+      : file.name;
+
+    let candidatePath = normalizePath(`${targetFolder}/${file.name}`);
+    let counter = 1;
+
+    while (this.app.vault.getAbstractFileByPath(candidatePath)) {
+      if (candidatePath === file.path) {
+        return candidatePath;
+      }
+
+      candidatePath = normalizePath(
+        `${targetFolder}/${baseName} ${counter}${extensionSuffix}`,
+      );
+      counter += 1;
+    }
+
+    return candidatePath;
+  }
 }
 
 async function ensureExistingDirectory(directoryPath: string): Promise<void> {
@@ -162,5 +230,42 @@ async function ensureExistingDirectory(directoryPath: string): Promise<void> {
 
   if (!stats.isDirectory()) {
     throw new Error(`Le chemin configuré n'est pas un dossier: ${directoryPath}`);
+  }
+}
+
+async function ensureVaultFolderExists(
+  app: Plugin["app"],
+  folderPath: string,
+): Promise<void> {
+  const normalizedFolderPath = normalizePath(folderPath);
+  if (!normalizedFolderPath) {
+    throw new Error("Le dossier cible est vide.");
+  }
+
+  const existing = app.vault.getAbstractFileByPath(normalizedFolderPath);
+  if (existing instanceof TFolder) {
+    return;
+  }
+
+  if (existing) {
+    throw new Error(`Le chemin cible existe déjà et n'est pas un dossier: ${normalizedFolderPath}`);
+  }
+
+  const segments = normalizedFolderPath.split("/");
+  let currentPath = "";
+
+  for (const segment of segments) {
+    currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+    const current = app.vault.getAbstractFileByPath(currentPath);
+
+    if (current instanceof TFolder) {
+      continue;
+    }
+
+    if (current) {
+      throw new Error(`Impossible de créer le dossier ${currentPath}: un fichier existe déjà.`);
+    }
+
+    await app.vault.createFolder(currentPath);
   }
 }

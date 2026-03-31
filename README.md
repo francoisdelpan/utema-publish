@@ -103,25 +103,28 @@ Dans les settings du plugin :
 1. `Folder to sync`
    - chemin relatif dans le vault
    - exemple : `Publish`
-2. `Remote name`
+2. `Auto moving files folder`
+   - dossier cible utilisé par la commande de déplacement rapide du fichier actif
+   - exemple : `Inbox/Reviewed`
+3. `Remote name`
    - défaut : `origin`
-3. `Branch name`
+4. `Branch name`
    - défaut : `main`
-4. `Repository URL`
+5. `Repository URL`
    - URL Git attendue pour le remote
    - exemple : `git@github.com:org/repo.git`
-5. `SSH key path`
+6. `SSH key path`
    - chemin local vers la clé SSH privée
    - exemple : `/Users/vous/.ssh/id_ed25519`
-6. `Missing link fallback`
+7. `Missing link fallback`
    - page Markdown de repli pour les liens vers des notes hors dossier publié
    - exemple : `404.md`
-7. `Convert wiki links before sync`
+8. `Convert wiki links before sync`
    - active la conversion avant Git
-8. `Push mode`
+9. `Push mode`
    - `Explicite` : `git push <remote> <branch>`
    - `Simple` : `git push`
-9. `Dry run`
+10. `Dry run`
    - simule la conversion et la sync Git sans écrire les fichiers ni lancer Git
 
 ## Fallback 404
@@ -163,6 +166,14 @@ Commande Obsidian :
 ```text
 UTEMA Sync Folder To Git
 ```
+
+Commande supplémentaire :
+
+```text
+UTEMA Move Active File To Auto Folder
+```
+
+Cette commande prend le fichier actuellement ouvert, crée le dossier cible si besoin, puis le déplace dedans. Si un fichier du même nom existe déjà, le plugin ajoute un suffixe numérique au nom.
 
 Workflow :
 

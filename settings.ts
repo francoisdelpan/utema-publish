@@ -5,6 +5,7 @@ export type PushMode = "explicit" | "simple";
 
 export interface UtemaPublishSettings {
   publishFolder: string;
+  autoMoveFolder: string;
   remoteName: string;
   branchName: string;
   repoUrl: string;
@@ -17,6 +18,7 @@ export interface UtemaPublishSettings {
 
 export const DEFAULT_SETTINGS: UtemaPublishSettings = {
   publishFolder: "Publish",
+  autoMoveFolder: "",
   remoteName: "origin",
   branchName: "main",
   repoUrl: "",
@@ -50,6 +52,19 @@ export class UtemaPublishSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.publishFolder)
           .onChange(async (value) => {
             this.plugin.settings.publishFolder = value.trim();
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Auto moving files folder")
+      .setDesc("Dossier cible utilisé par la commande de déplacement rapide du fichier actif.")
+      .addText((text) =>
+        text
+          .setPlaceholder("Inbox/Reviewed")
+          .setValue(this.plugin.settings.autoMoveFolder)
+          .onChange(async (value) => {
+            this.plugin.settings.autoMoveFolder = value.trim();
             await this.plugin.saveSettings();
           }),
       );
