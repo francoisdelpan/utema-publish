@@ -28,11 +28,17 @@ const banner =
   "));\n";
 
 const production = process.argv[2] === "production";
+const externalModules = [
+  "obsidian",
+  "electron",
+  ...builtins,
+  ...builtins.map((moduleName) => `node:${moduleName}`),
+];
 
 const context = await esbuild.context({
   entryPoints: ["main.ts"],
   bundle: true,
-  external: ["obsidian", "electron", ...builtins],
+  external: externalModules,
   format: "cjs",
   target: "es2020",
   logLevel: "info",

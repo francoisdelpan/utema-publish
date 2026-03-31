@@ -125,6 +125,11 @@ export function isMarkdownFile(fileName: string): boolean {
 export function convertWikiLinks(content: string): string;
 export function convertWikiLinks(
   content: string,
+  currentFilePath: string,
+  context: ConversionContext,
+): string;
+export function convertWikiLinks(
+  content: string,
   currentFilePath?: string,
   context?: ConversionContext,
 ): string {
