@@ -403,7 +403,7 @@ function convertWikiLinks(content, currentFilePath, context) {
       }
     }
   };
-  return content.replace(/(!)?\[\[([^[\]]+?)\]\]/g, (match, embedPrefix, inner) => {
+  const convertedLinks = content.replace(/(!)?\[\[([^[\]]+?)\]\]/g, (match, embedPrefix, inner) => {
     const parsed = parseWikiLink(inner);
     if (!parsed) {
       return match;
@@ -415,6 +415,7 @@ function convertWikiLinks(content, currentFilePath, context) {
     const label = parsed.alias ?? parsed.originalTarget;
     return `[${label}](${href})`;
   });
+  return convertCalloutsToGitHubAlerts(convertedLinks);
 }
 function parseWikiLink(rawValue) {
   const trimmed = rawValue.trim();
@@ -436,15 +437,16 @@ function parseWikiLink(rawValue) {
 }
 function extractPageTarget(targetPart) {
   const trimmed = normalizeLinkTarget(targetPart);
-  const hashIndex = trimmed.indexOf("#");
-  const blockIndex = trimmed.indexOf("^");
+  const targetWithoutSize = stripEmbedSize(trimmed);
+  const hashIndex = targetWithoutSize.indexOf("#");
+  const blockIndex = targetWithoutSize.indexOf("^");
   const indexes = [hashIndex, blockIndex].filter((index) => index >= 0);
   const stopIndex = indexes.length > 0 ? Math.min(...indexes) : -1;
-  const baseTarget = stopIndex >= 0 ? trimmed.slice(0, stopIndex) : trimmed;
+  const baseTarget = stopIndex >= 0 ? targetWithoutSize.slice(0, stopIndex) : targetWithoutSize;
   return baseTarget.trim();
 }
 function extractFragment(targetPart) {
-  const trimmed = targetPart.trim();
+  const trimmed = stripEmbedSize(targetPart.trim());
   const hashIndex = trimmed.indexOf("#");
   if (hashIndex >= 0) {
     return `#${trimmed.slice(hashIndex + 1).trim()}`;
@@ -487,8 +489,9 @@ function convertEmbedLink(originalMatch, parsed, currentFilePath, context) {
   const relativeTarget = buildRelativePath(resolvedTarget, currentFilePath, context);
   const encodedPath = encodeVaultPath(relativeTarget);
   const encodedFragment = parsed.fragment ? `#${encodeURIComponent(parsed.fragment.slice(1))}` : "";
-  const altText = parsed.alias ?? "";
-  return `![${altText}](${encodedPath}${encodedFragment})`;
+  const altText = buildEmbedAltText(parsed);
+  const sizeSuffix = buildEmbedSizeSuffix(parsed.originalTarget);
+  return `![${altText}](${encodedPath}${encodedFragment}${sizeSuffix})`;
 }
 function buildRelativePath(resolvedTarget, currentFilePath, context) {
   if (!currentFilePath || !context.rootDirectory) {
@@ -563,6 +566,97 @@ function normalizeLinkTarget(value) {
 }
 function toPosixPath(value) {
   return value.replace(/\\/g, "/");
+}
+function stripEmbedSize(value) {
+  return value.replace(/\|(?:\d+)?x?(?:\d+)?$/, "");
+}
+function buildEmbedSizeSuffix(rawTarget) {
+  const parsedSize = parseEmbedSize(rawTarget);
+  if (!parsedSize) {
+    return "";
+  }
+  if (parsedSize.width && parsedSize.height) {
+    return ` =${parsedSize.width}x${parsedSize.height}`;
+  }
+  if (parsedSize.width) {
+    return ` =${parsedSize.width}x`;
+  }
+  if (parsedSize.height) {
+    return ` =x${parsedSize.height}`;
+  }
+  return "";
+}
+function parseEmbedSize(rawTarget) {
+  const match = rawTarget.match(/\|(?:(\d+)?x?(\d+)?)$/);
+  if (!match) {
+    return null;
+  }
+  const [, width, height] = match;
+  if (!width && !height) {
+    return null;
+  }
+  return {
+    width: width || void 0,
+    height: height || void 0
+  };
+}
+function buildEmbedAltText(parsed) {
+  if (parsed.alias) {
+    return parsed.alias;
+  }
+  return path.posix.basename(parsed.pageTarget);
+}
+function convertCalloutsToGitHubAlerts(content) {
+  const lines = content.split("\n");
+  const convertedLines = [];
+  for (const line of lines) {
+    const converted = convertCalloutLine(line);
+    if (Array.isArray(converted)) {
+      convertedLines.push(...converted);
+      continue;
+    }
+    convertedLines.push(converted);
+  }
+  return convertedLines.join("\n");
+}
+function convertCalloutLine(line) {
+  const match = line.match(/^(\s*(?:>\s*)+)\[!([A-Za-z0-9_-]+)\]([+-]?)(?:\s+(.*))?$/);
+  if (!match) {
+    return line;
+  }
+  const [, prefix, rawType, , rawTitle = ""] = match;
+  const type = rawType.toLowerCase();
+  const title = rawTitle.trim();
+  const mappedType = mapObsidianCalloutToGitHubAlert(type);
+  if (mappedType === null) {
+    return title ? [`${prefix}**${title}**`] : "";
+  }
+  const lines = [`${prefix}[!${mappedType}]`];
+  if (title) {
+    lines.push(`${prefix}**${title}**`);
+  }
+  return lines;
+}
+function mapObsidianCalloutToGitHubAlert(type) {
+  if (["quote", "cite"].includes(type)) {
+    return null;
+  }
+  if (["tip", "hint"].includes(type)) {
+    return "TIP";
+  }
+  if (["important", "success", "check", "done"].includes(type)) {
+    return "IMPORTANT";
+  }
+  if (["warning", "attention", "bug"].includes(type)) {
+    return "WARNING";
+  }
+  if (["caution"].includes(type)) {
+    return "CAUTION";
+  }
+  if (["danger", "error", "failure", "fail", "missing"].includes(type)) {
+    return "WARNING";
+  }
+  return "NOTE";
 }
 function encodeVaultPath(target) {
   return target.split("/").map((segment) => encodeURIComponent(segment)).join("/");

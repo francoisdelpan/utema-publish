@@ -21,6 +21,11 @@ interface ParsedWikiLink {
   fragment?: string;
 }
 
+interface ParsedEmbedSize {
+  width?: string;
+  height?: string;
+}
+
 interface ConversionContext {
   rootDirectory: string;
   markdownFiles: string[];
@@ -151,7 +156,7 @@ export function convertWikiLinks(
       },
     } satisfies ConversionContext);
 
-  return content.replace(/(!)?\[\[([^[\]]+?)\]\]/g, (match, embedPrefix, inner) => {
+  const convertedLinks = content.replace(/(!)?\[\[([^[\]]+?)\]\]/g, (match, embedPrefix, inner) => {
     const parsed = parseWikiLink(inner);
     if (!parsed) {
       return match;
@@ -165,6 +170,8 @@ export function convertWikiLinks(
     const label = parsed.alias ?? parsed.originalTarget;
     return `[${label}](${href})`;
   });
+
+  return convertCalloutsToGitHubAlerts(convertedLinks);
 }
 
 export function parseWikiLink(rawValue: string): ParsedWikiLink | null {
@@ -192,18 +199,20 @@ export function parseWikiLink(rawValue: string): ParsedWikiLink | null {
 
 function extractPageTarget(targetPart: string): string {
   const trimmed = normalizeLinkTarget(targetPart);
-  const hashIndex = trimmed.indexOf("#");
-  const blockIndex = trimmed.indexOf("^");
+  const targetWithoutSize = stripEmbedSize(trimmed);
+  const hashIndex = targetWithoutSize.indexOf("#");
+  const blockIndex = targetWithoutSize.indexOf("^");
 
   const indexes = [hashIndex, blockIndex].filter((index) => index >= 0);
   const stopIndex = indexes.length > 0 ? Math.min(...indexes) : -1;
-  const baseTarget = stopIndex >= 0 ? trimmed.slice(0, stopIndex) : trimmed;
+  const baseTarget =
+    stopIndex >= 0 ? targetWithoutSize.slice(0, stopIndex) : targetWithoutSize;
 
   return baseTarget.trim();
 }
 
 function extractFragment(targetPart: string): string | undefined {
-  const trimmed = targetPart.trim();
+  const trimmed = stripEmbedSize(targetPart.trim());
 
   const hashIndex = trimmed.indexOf("#");
   if (hashIndex >= 0) {
@@ -278,9 +287,10 @@ function convertEmbedLink(
   const encodedFragment = parsed.fragment
     ? `#${encodeURIComponent(parsed.fragment.slice(1))}`
     : "";
-  const altText = parsed.alias ?? "";
+  const altText = buildEmbedAltText(parsed);
+  const sizeSuffix = buildEmbedSizeSuffix(parsed.originalTarget);
 
-  return `![${altText}](${encodedPath}${encodedFragment})`;
+  return `![${altText}](${encodedPath}${encodedFragment}${sizeSuffix})`;
 }
 
 function buildRelativePath(
@@ -376,6 +386,124 @@ function normalizeLinkTarget(value: string): string {
 
 function toPosixPath(value: string): string {
   return value.replace(/\\/g, "/");
+}
+
+function stripEmbedSize(value: string): string {
+  return value.replace(/\|(?:\d+)?x?(?:\d+)?$/, "");
+}
+
+function buildEmbedSizeSuffix(rawTarget: string): string {
+  const parsedSize = parseEmbedSize(rawTarget);
+  if (!parsedSize) {
+    return "";
+  }
+
+  if (parsedSize.width && parsedSize.height) {
+    return ` =${parsedSize.width}x${parsedSize.height}`;
+  }
+
+  if (parsedSize.width) {
+    return ` =${parsedSize.width}x`;
+  }
+
+  if (parsedSize.height) {
+    return ` =x${parsedSize.height}`;
+  }
+
+  return "";
+}
+
+function parseEmbedSize(rawTarget: string): ParsedEmbedSize | null {
+  const match = rawTarget.match(/\|(?:(\d+)?x?(\d+)?)$/);
+  if (!match) {
+    return null;
+  }
+
+  const [, width, height] = match;
+  if (!width && !height) {
+    return null;
+  }
+
+  return {
+    width: width || undefined,
+    height: height || undefined,
+  };
+}
+
+function buildEmbedAltText(parsed: ParsedWikiLink): string {
+  if (parsed.alias) {
+    return parsed.alias;
+  }
+
+  return path.posix.basename(parsed.pageTarget);
+}
+
+function convertCalloutsToGitHubAlerts(content: string): string {
+  const lines = content.split("\n");
+  const convertedLines: string[] = [];
+
+  for (const line of lines) {
+    const converted = convertCalloutLine(line);
+    if (Array.isArray(converted)) {
+      convertedLines.push(...converted);
+      continue;
+    }
+
+    convertedLines.push(converted);
+  }
+
+  return convertedLines.join("\n");
+}
+
+function convertCalloutLine(line: string): string | string[] {
+  const match = line.match(/^(\s*(?:>\s*)+)\[!([A-Za-z0-9_-]+)\]([+-]?)(?:\s+(.*))?$/);
+  if (!match) {
+    return line;
+  }
+
+  const [, prefix, rawType, , rawTitle = ""] = match;
+  const type = rawType.toLowerCase();
+  const title = rawTitle.trim();
+  const mappedType = mapObsidianCalloutToGitHubAlert(type);
+
+  if (mappedType === null) {
+    return title ? [`${prefix}**${title}**`] : "";
+  }
+
+  const lines = [`${prefix}[!${mappedType}]`];
+  if (title) {
+    lines.push(`${prefix}**${title}**`);
+  }
+
+  return lines;
+}
+
+function mapObsidianCalloutToGitHubAlert(type: string): string | null {
+  if (["quote", "cite"].includes(type)) {
+    return null;
+  }
+
+  if (["tip", "hint"].includes(type)) {
+    return "TIP";
+  }
+
+  if (["important", "success", "check", "done"].includes(type)) {
+    return "IMPORTANT";
+  }
+
+  if (["warning", "attention", "bug"].includes(type)) {
+    return "WARNING";
+  }
+
+  if (["caution"].includes(type)) {
+    return "CAUTION";
+  }
+
+  if (["danger", "error", "failure", "fail", "missing"].includes(type)) {
+    return "WARNING";
+  }
+
+  return "NOTE";
 }
 
 function encodeVaultPath(target: string): string {

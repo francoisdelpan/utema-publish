@@ -35,6 +35,8 @@ Exemples :
 [[Dossier/Page]] -> [Dossier/Page](Dossier/Page.md)
 [[Note]] dans docs/index.md -> [Note](../Note.md)
 [[Ma Page|Texte visible]] -> [Texte visible](Ma%20Page.md)
+![[image.png]] -> ![image.png](image.png)
+![[image.png|640x480]] -> ![image.png](image.png =640x480)
 ```
 
 Si la cible est ambiguë ou introuvable, le plugin retombe sur un mapping simple vers `<cible>.md`.
@@ -42,6 +44,57 @@ Si la cible est ambiguë ou introuvable, le plugin retombe sur un mapping simple
 Les embeds de notes Markdown `![[Ma Note]]` restent inchangés.
 
 Les embeds pointant vers des fichiers non-Markdown résolus dans le dossier synchronisé sont convertis en embeds Markdown classiques.
+
+## Mapping Obsidian -> GitHub
+
+Mappings déjà implémentés :
+
+- `[[Note]]` -> `[Note](Note.md)` ou lien relatif résolu
+- `[[Dossier/Note]]` -> `[Dossier/Note](Dossier/Note.md)`
+- `[[Note#Section]]` -> `[Note#Section](Note.md#Section)`
+- `[[Note^block]]` -> `[Note^block](Note.md#%5Eblock)` selon l'encodage Markdown
+- `![[image.png]]` -> `![image.png](image.png)`
+- `![[image.png|640x480]]` -> `![image.png](image.png =640x480)`
+- callouts Obsidian de type `note`, `tip`, `important`, `warning`, `caution` -> alertes GitHub
+- callouts `quote` et `cite` -> blockquotes Markdown classiques
+
+Mappings de callouts actuellement prévus :
+
+- `note`, `abstract`, `summary`, `tldr`, `info`, `todo`, `example`, `question`, `help`, `faq` -> `> [!NOTE]`
+- `tip`, `hint` -> `> [!TIP]`
+- `important`, `success`, `check`, `done` -> `> [!IMPORTANT]`
+- `warning`, `attention`, `bug`, `danger`, `error`, `failure`, `fail`, `missing` -> `> [!WARNING]`
+- `caution` -> `> [!CAUTION]`
+- `quote`, `cite` -> citation simple avec `>`
+
+Exemples :
+
+```md
+> [!tip] Astuce
+> Utilise des notes courtes.
+```
+
+devient :
+
+```md
+> [!TIP]
+> **Astuce**
+> Utilise des notes courtes.
+```
+
+et
+
+```md
+> [!quote] Victor Hugo
+> La forme, c'est le fond...
+```
+
+devient :
+
+```md
+> **Victor Hugo**
+> La forme, c'est le fond...
+```
 
 ## Configuration
 
