@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import * as path from "node:path";
 
 const IGNORED_DIRECTORIES = new Set([".git", ".obsidian", "node_modules"]);
+const TEMP_FILE_SUFFIX = ".tmp-utema-sync";
 
 export interface LinkConversionSummary {
   scannedFiles: number;
@@ -20,16 +21,36 @@ interface ParsedWikiLink {
   fragment?: string;
 }
 
+interface ConversionContext {
+  rootDirectory: string;
+  markdownFiles: string[];
+  allFiles: string[];
+  markdownResolver: LinkResolver;
+  fileResolver: LinkResolver;
+}
+
+interface LinkResolver {
+  resolve(target: string): string | null;
+}
+
 export async function convertWikiLinksInDirectory(
   directoryPath: string,
   options: LinkConversionOptions = { writeChanges: true },
 ): Promise<LinkConversionSummary> {
   const markdownFiles = await collectMarkdownFiles(directoryPath);
+  const allFiles = await collectFiles(directoryPath);
+  const context: ConversionContext = {
+    rootDirectory: directoryPath,
+    markdownFiles,
+    allFiles,
+    markdownResolver: createLinkResolver(directoryPath, markdownFiles),
+    fileResolver: createLinkResolver(directoryPath, allFiles),
+  };
   const changedRelativePaths: string[] = [];
 
   for (const filePath of markdownFiles) {
     const originalContent = await fs.readFile(filePath, "utf8");
-    const convertedContent = convertWikiLinks(originalContent);
+    const convertedContent = convertWikiLinks(originalContent, filePath, context);
 
     if (convertedContent === originalContent) {
       continue;
@@ -75,22 +96,67 @@ export async function collectMarkdownFiles(
   return files;
 }
 
+export async function collectFiles(directoryPath: string): Promise<string[]> {
+  const files: string[] = [];
+  const entries = await fs.readdir(directoryPath, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const entryPath = path.join(directoryPath, entry.name);
+
+    if (entry.isDirectory()) {
+      if (IGNORED_DIRECTORIES.has(entry.name)) {
+        continue;
+      }
+
+      files.push(...(await collectFiles(entryPath)));
+      continue;
+    }
+
+    files.push(entryPath);
+  }
+
+  return files;
+}
+
 export function isMarkdownFile(fileName: string): boolean {
   return fileName.toLowerCase().endsWith(".md");
 }
 
-export function convertWikiLinks(content: string): string {
-  return content.replace(/(!)?\[\[([^[\]]+?)\]\]/g, (match, embedPrefix, inner) => {
-    if (embedPrefix === "!") {
-      return match;
-    }
+export function convertWikiLinks(content: string): string;
+export function convertWikiLinks(
+  content: string,
+  currentFilePath?: string,
+  context?: ConversionContext,
+): string {
+  const effectiveContext =
+    context ??
+    ({
+      rootDirectory: "",
+      markdownFiles: [],
+      allFiles: [],
+      markdownResolver: {
+        resolve(target: string): string {
+          return ensureMarkdownExtension(normalizeLinkTarget(target));
+        },
+      },
+      fileResolver: {
+        resolve(target: string): string | null {
+          return normalizeLinkTarget(target) || null;
+        },
+      },
+    } satisfies ConversionContext);
 
+  return content.replace(/(!)?\[\[([^[\]]+?)\]\]/g, (match, embedPrefix, inner) => {
     const parsed = parseWikiLink(inner);
     if (!parsed) {
       return match;
     }
 
-    const href = buildMarkdownHref(parsed);
+    if (embedPrefix === "!") {
+      return convertEmbedLink(match, parsed, currentFilePath ?? "", effectiveContext);
+    }
+
+    const href = buildMarkdownHref(parsed, currentFilePath ?? "", effectiveContext);
     const label = parsed.alias ?? parsed.originalTarget;
     return `[${label}](${href})`;
   });
@@ -120,7 +186,7 @@ export function parseWikiLink(rawValue: string): ParsedWikiLink | null {
 }
 
 function extractPageTarget(targetPart: string): string {
-  const trimmed = targetPart.trim();
+  const trimmed = normalizeLinkTarget(targetPart);
   const hashIndex = trimmed.indexOf("#");
   const blockIndex = trimmed.indexOf("^");
 
@@ -147,8 +213,14 @@ function extractFragment(targetPart: string): string | undefined {
   return undefined;
 }
 
-function buildMarkdownHref(parsed: ParsedWikiLink): string {
-  const encodedPath = encodeVaultPath(ensureMarkdownExtension(parsed.pageTarget));
+function buildMarkdownHref(
+  parsed: ParsedWikiLink,
+  currentFilePath: string,
+  context: ConversionContext,
+): string {
+  const encodedPath = encodeVaultPath(
+    buildRelativeMarkdownPath(parsed.pageTarget, currentFilePath, context),
+  );
   const encodedFragment = parsed.fragment
     ? `#${encodeURIComponent(parsed.fragment.slice(1))}`
     : "";
@@ -158,6 +230,147 @@ function buildMarkdownHref(parsed: ParsedWikiLink): string {
 
 function ensureMarkdownExtension(target: string): string {
   return target.toLowerCase().endsWith(".md") ? target : `${target}.md`;
+}
+
+function buildRelativeMarkdownPath(
+  rawTarget: string,
+  currentFilePath: string,
+  context: ConversionContext,
+): string {
+  const resolvedTarget =
+    context.markdownResolver.resolve(rawTarget) ??
+    ensureMarkdownExtension(normalizeLinkTarget(rawTarget));
+
+  if (!currentFilePath || !context.rootDirectory) {
+    return resolvedTarget;
+  }
+
+  const currentDirectory = path.dirname(currentFilePath);
+  const absoluteTargetPath = path.join(context.rootDirectory, resolvedTarget);
+  const relativePath = path.relative(currentDirectory, absoluteTargetPath);
+  const normalizedRelativePath = toPosixPath(relativePath);
+
+  if (!normalizedRelativePath || normalizedRelativePath === ".") {
+    return path.basename(absoluteTargetPath);
+  }
+
+  return normalizedRelativePath;
+}
+
+function convertEmbedLink(
+  originalMatch: string,
+  parsed: ParsedWikiLink,
+  currentFilePath: string,
+  context: ConversionContext,
+): string {
+  const resolvedTarget = context.fileResolver.resolve(parsed.pageTarget);
+  if (!resolvedTarget || resolvedTarget.toLowerCase().endsWith(".md")) {
+    return originalMatch;
+  }
+
+  const relativeTarget = buildRelativePath(resolvedTarget, currentFilePath, context);
+  const encodedPath = encodeVaultPath(relativeTarget);
+  const encodedFragment = parsed.fragment
+    ? `#${encodeURIComponent(parsed.fragment.slice(1))}`
+    : "";
+  const altText = parsed.alias ?? "";
+
+  return `![${altText}](${encodedPath}${encodedFragment})`;
+}
+
+function buildRelativePath(
+  resolvedTarget: string,
+  currentFilePath: string,
+  context: ConversionContext,
+): string {
+  if (!currentFilePath || !context.rootDirectory) {
+    return resolvedTarget;
+  }
+
+  const currentDirectory = path.dirname(currentFilePath);
+  const absoluteTargetPath = path.join(context.rootDirectory, resolvedTarget);
+  const relativePath = path.relative(currentDirectory, absoluteTargetPath);
+  const normalizedRelativePath = toPosixPath(relativePath);
+
+  if (!normalizedRelativePath || normalizedRelativePath === ".") {
+    return path.basename(absoluteTargetPath);
+  }
+
+  return normalizedRelativePath;
+}
+
+function createLinkResolver(rootDirectory: string, markdownFiles: string[]): LinkResolver {
+  const exactMatches = new Map<string, string>();
+  const basenameMatches = new Map<string, string[]>();
+
+  for (const filePath of markdownFiles) {
+    const relativePath = toPosixPath(path.relative(rootDirectory, filePath));
+    const relativeWithoutExtension = stripMarkdownExtension(relativePath);
+    const basename = path.posix.basename(relativeWithoutExtension);
+
+    for (const key of buildLookupKeys(relativePath)) {
+      exactMatches.set(key, relativePath);
+    }
+
+    const entries = basenameMatches.get(basename) ?? [];
+    entries.push(relativePath);
+    basenameMatches.set(basename, entries);
+  }
+
+  return {
+    resolve(target: string): string | null {
+      const normalizedTarget = normalizeLinkTarget(target);
+      if (!normalizedTarget) {
+        return null;
+      }
+
+      for (const key of buildLookupKeys(normalizedTarget)) {
+        const exactMatch = exactMatches.get(key);
+        if (exactMatch) {
+          return exactMatch;
+        }
+      }
+
+      const basename = path.posix.basename(stripMarkdownExtension(normalizedTarget));
+      const basenameCandidates = basenameMatches.get(basename) ?? [];
+      if (basenameCandidates.length === 1) {
+        return basenameCandidates[0];
+      }
+
+      return null;
+    },
+  };
+}
+
+function buildLookupKeys(value: string): string[] {
+  const normalizedValue = normalizeLinkTarget(value);
+  if (!normalizedValue) {
+    return [];
+  }
+
+  const withoutExtension = stripMarkdownExtension(normalizedValue);
+  return Array.from(
+    new Set([
+      normalizedValue,
+      normalizedValue.toLowerCase(),
+      withoutExtension,
+      withoutExtension.toLowerCase(),
+      ensureMarkdownExtension(withoutExtension),
+      ensureMarkdownExtension(withoutExtension).toLowerCase(),
+    ]),
+  );
+}
+
+function stripMarkdownExtension(value: string): string {
+  return value.toLowerCase().endsWith(".md") ? value.slice(0, -3) : value;
+}
+
+function normalizeLinkTarget(value: string): string {
+  return toPosixPath(value.trim()).replace(/^(\.\/)+/, "").replace(/^\/+/, "");
+}
+
+function toPosixPath(value: string): string {
+  return value.replace(/\\/g, "/");
 }
 
 function encodeVaultPath(target: string): string {
@@ -171,7 +384,7 @@ async function writeFileAtomically(
   filePath: string,
   content: string,
 ): Promise<void> {
-  const tempPath = `${filePath}.tmp-utema-publish`;
+  const tempPath = `${filePath}${TEMP_FILE_SUFFIX}`;
   await fs.writeFile(tempPath, content, "utf8");
   await fs.rename(tempPath, filePath);
 }

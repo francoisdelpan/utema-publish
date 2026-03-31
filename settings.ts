@@ -7,6 +7,8 @@ export interface UtemaPublishSettings {
   publishFolder: string;
   remoteName: string;
   branchName: string;
+  repoUrl: string;
+  sshKeyPath: string;
   convertWikiLinksBeforePublish: boolean;
   pushMode: PushMode;
   dryRun: boolean;
@@ -16,6 +18,8 @@ export const DEFAULT_SETTINGS: UtemaPublishSettings = {
   publishFolder: "Publish",
   remoteName: "origin",
   branchName: "main",
+  repoUrl: "",
+  sshKeyPath: "",
   convertWikiLinksBeforePublish: true,
   pushMode: "explicit",
   dryRun: false,
@@ -33,11 +37,11 @@ export class UtemaPublishSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "UTEMA Publish" });
+    containerEl.createEl("h2", { text: "UTEMA Sync" });
 
     new Setting(containerEl)
-      .setName("Publish folder")
-      .setDesc("Chemin relatif dans le vault. Exemple : Publish")
+      .setName("Folder to sync")
+      .setDesc("Chemin relatif dans le vault vers le dossier suivi par Git.")
       .addText((text) =>
         text
           .setPlaceholder("Publish")
@@ -75,8 +79,34 @@ export class UtemaPublishSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Convert wiki links before publish")
-      .setDesc("Convertit les liens [[...]] en liens Markdown avant Git.")
+      .setName("Repository URL")
+      .setDesc("URL Git attendue pour le remote. Exemple : git@github.com:org/repo.git")
+      .addText((text) =>
+        text
+          .setPlaceholder("git@github.com:org/repo.git")
+          .setValue(this.plugin.settings.repoUrl)
+          .onChange(async (value) => {
+            this.plugin.settings.repoUrl = value.trim();
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("SSH key path")
+      .setDesc("Chemin local vers la clé SSH privée à utiliser pour Git. Optionnel.")
+      .addText((text) =>
+        text
+          .setPlaceholder("/Users/vous/.ssh/id_ed25519")
+          .setValue(this.plugin.settings.sshKeyPath)
+          .onChange(async (value) => {
+            this.plugin.settings.sshKeyPath = value.trim();
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Convert wiki links before sync")
+      .setDesc("Résout les liens [[...]] en vrais liens Markdown `.md` avant Git.")
       .addToggle((toggle) =>
         toggle
           .setValue(this.plugin.settings.convertWikiLinksBeforePublish)
@@ -102,7 +132,7 @@ export class UtemaPublishSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Dry run")
-      .setDesc("Prépare et journalise l'action sans exécuter Git.")
+      .setDesc("Prépare la sync sans modifier Git ni écrire les conversions.")
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.dryRun).onChange(async (value) => {
           this.plugin.settings.dryRun = value;

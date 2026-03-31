@@ -26,11 +26,11 @@ export default class UtemaPublishPlugin extends Plugin {
     await this.loadSettings();
 
     this.addCommand({
-      id: "utema-publish",
-      name: "UTEMA Publish",
+      id: "utema-sync-folder-to-git",
+      name: "UTEMA Sync Folder To Git",
       callback: () => {
         new CommitModal(this.app, (message) => {
-          void this.runPublishWorkflow(message);
+          void this.runSyncWorkflow(message);
         }).open();
       },
     });
@@ -50,11 +50,11 @@ export default class UtemaPublishPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
-  private async runPublishWorkflow(commitMessage: string): Promise<void> {
+  private async runSyncWorkflow(commitMessage: string): Promise<void> {
     const publishFolder = this.settings.publishFolder.trim();
 
     if (!publishFolder) {
-      new Notice("Le dossier de publication n'est pas configuré.");
+      new Notice("Le dossier à synchroniser n'est pas configuré.");
       return;
     }
 
@@ -65,7 +65,7 @@ export default class UtemaPublishPlugin extends Plugin {
     }
 
     const publishDirectory = path.join(vaultBasePath, normalizePath(publishFolder));
-    console.info("[UTEMA Publish] Starting publish", {
+    console.info("[UTEMA Sync] Starting sync", {
       publishDirectory,
       pushMode: this.settings.pushMode,
       dryRun: this.settings.dryRun,
@@ -90,31 +90,33 @@ export default class UtemaPublishPlugin extends Plugin {
         commitMessage,
         remoteName: this.settings.remoteName.trim() || DEFAULT_SETTINGS.remoteName,
         branchName: this.settings.branchName.trim() || DEFAULT_SETTINGS.branchName,
+        repoUrl: this.settings.repoUrl.trim(),
+        sshKeyPath: this.settings.sshKeyPath.trim(),
         pushMode: this.settings.pushMode,
         dryRun: this.settings.dryRun,
       });
 
-      console.info("[UTEMA Publish] Publish summary", {
+      console.info("[UTEMA Sync] Sync summary", {
         conversionSummary,
         gitSummary,
       });
 
       if (!gitSummary.hadChanges) {
-        new Notice("Aucun changement à publier.");
+        new Notice("Aucun changement à synchroniser.");
         return;
       }
 
       if (this.settings.dryRun) {
         new Notice(
-          `Dry run terminé. ${conversionSummary.changedFiles} fichier(s) modifié(s), Git non exécuté.`,
+          `Dry run terminé. ${conversionSummary.changedFiles} fichier(s) converti(s), synchronisation Git non exécutée.`,
         );
         return;
       }
 
-      new Notice("Publication terminée.");
+      new Notice("Synchronisation Git terminée.");
     } catch (error) {
       const message = this.formatErrorMessage(error);
-      console.error("[UTEMA Publish] Publish failed", error);
+      console.error("[UTEMA Sync] Sync failed", error);
       new Notice(message, 10000);
     }
   }
@@ -142,7 +144,7 @@ export default class UtemaPublishPlugin extends Plugin {
       return error.message;
     }
 
-    return "Une erreur inconnue est survenue pendant la publication.";
+    return "Une erreur inconnue est survenue pendant la synchronisation.";
   }
 }
 

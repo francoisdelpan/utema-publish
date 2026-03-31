@@ -15,14 +15,14 @@ export class CommitModal extends Modal {
 
   onOpen(): void {
     const { contentEl, titleEl } = this;
-    titleEl.setText("UTEMA Publish");
+    titleEl.setText("UTEMA Sync");
     contentEl.addClass("utema-publish-modal");
 
     let commitMessage = "";
 
     new Setting(contentEl)
       .setName("Commit message")
-      .setDesc("Message obligatoire avant publication.")
+      .setDesc("Message obligatoire avant synchronisation Git.")
       .addText((text) => {
         this.input = text;
         text.inputEl.placeholder = "Ex. Publish notes";
@@ -41,7 +41,7 @@ export class CommitModal extends Modal {
 
     new Setting(contentEl)
       .addButton((button) => {
-        button.setButtonText("Publier");
+        button.setButtonText("Synchroniser");
         button.setCta();
         button.setDisabled(true);
         button.onClick(() => this.submit(commitMessage));

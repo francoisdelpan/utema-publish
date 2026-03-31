@@ -1,188 +1,108 @@
-# UTEMA Publish
+# UTEMA Sync
 
-Plugin Obsidian local, minimaliste et desktop-only pour :
+Plugin Obsidian desktop-only pour synchroniser un dossier du vault avec un dépôt Git local, en convertissant les liens internes Obsidian en liens Markdown `.md`.
 
-1. convertir les liens wiki `[[...]]` d'un dossier du vault en liens Markdown classiques ;
-2. exécuter un workflow Git local simple :
+## Ce que fait le plugin
+
+1. parcourt récursivement un dossier configuré du vault ;
+2. convertit les wikilinks `[[...]]` en liens Markdown standards ;
+3. résout si possible la vraie cible Markdown dans le dossier synchronisé ;
+4. convertit aussi les embeds de fichiers non-Markdown `![[image.png]]` vers `![](relative/path.png)` ;
+5. exécute un workflow Git local simple :
    - `git add .`
    - `git commit -m "..."`
+   - `git pull --rebase <remote> <branch>`
    - `git push` ou `git push <remote> <branch>`
 
-Le plugin est pensé pour un usage interne, local-first, sans GitHub API, sans token stocké, et sans logique Git réimplémentée.
+Le plugin est local-first : pas d'API GitHub, pas de token stocké, pas de logique Git réimplémentée.
 
-## Structure
+## Résolution des liens
 
-```text
-utema-publish/
-├── .gitignore
-├── commitModal.ts
-├── esbuild.config.mjs
-├── gitService.ts
-├── linkConverter.ts
-├── main.ts
-├── manifest.json
-├── package.json
-├── README.md
-├── settings.ts
-├── styles.css
-├── tsconfig.json
-└── versions.json
-```
+Le convertisseur ne se contente plus d'ajouter `.md` à la fin d'une cible.
 
-## Choix d'implémentation V1
+Il essaie d'abord de retrouver le vrai fichier Markdown correspondant dans le dossier synchronisé :
 
-- Desktop only : le plugin utilise Node/Electron via Obsidian Desktop.
-- Exécution shell : via `child_process.execFile`, sans dépendance npm supplémentaire.
-- Push mode par défaut : `explicit`, donc `git push origin main`.
-- Vérifications avant action :
-  - le dossier configuré existe ;
-  - le dossier configuré est un dépôt Git valide ;
-  - si aucun changement n'est détecté, le plugin s'arrête proprement.
+- correspondance exacte sur un chemin relatif ;
+- correspondance exacte avec ou sans extension `.md` ;
+- correspondance par nom de note quand elle est unique.
 
-## Initialisation depuis le template officiel Obsidian
+Les liens générés sont ensuite écrits en chemins relatifs depuis le fichier source.
 
-Si tu veux repartir du template officiel :
-
-```bash
-git clone https://github.com/obsidianmd/obsidian-sample-plugin.git utema-publish
-cd utema-publish
-```
-
-Ensuite :
-
-1. remplace les fichiers du template par ceux fournis dans ce dossier ;
-2. garde `manifest.json`, `package.json`, `tsconfig.json` et `esbuild.config.mjs` alignés avec cette version ;
-3. lance l'installation npm.
-
-Tu peux aussi simplement utiliser directement ce dossier `utema-publish/` comme base de travail locale.
-
-## Installation locale pas à pas
-
-### 1. Installer les dépendances
-
-```bash
-cd utema-publish
-npm install
-```
-
-### 2. Builder le plugin
-
-```bash
-npm run build
-```
-
-Cela génère principalement :
-
-- `main.js`
-- `manifest.json`
-- `styles.css`
-
-### 3. Copier le plugin dans Obsidian
-
-Copie le dossier compilé dans ton vault Obsidian :
-
-```text
-<ton-vault>/.obsidian/plugins/utema-publish/
-```
-
-Les fichiers importants à avoir dans ce dossier :
-
-- `main.js`
-- `manifest.json`
-- `styles.css`
-- éventuellement `versions.json`
-
-En pratique, pour un plugin local interne, tu peux copier tout le dossier.
-
-### 4. Activer le plugin
-
-Dans Obsidian :
-
-1. ouvre `Settings`
-2. va dans `Community plugins`
-3. désactive `Restricted mode` si les community plugins sont bloqués
-4. active le plugin `UTEMA Publish`
-
-## Configuration
-
-Dans l'onglet de settings du plugin :
-
-1. `Publish folder`
-   - chemin relatif dans le vault
-   - exemple : `Publish`
-
-2. `Remote name`
-   - défaut : `origin`
-
-3. `Branch name`
-   - défaut : `main`
-
-4. `Convert wiki links before publish`
-   - défaut : `true`
-
-5. `Push mode`
-   - `Explicite` : `git push <remote> <branch>`
-   - `Simple` : `git push`
-
-6. `Dry run`
-   - simule la conversion et le workflow Git sans écrire les fichiers ni lancer Git
-
-## Utilisation
-
-### Command Palette
-
-La commande disponible dans Obsidian est :
-
-```text
-UTEMA Publish
-```
-
-### Raccourci clavier
-
-Pour lui assigner un raccourci :
-
-1. va dans `Settings`
-2. ouvre `Hotkeys`
-3. cherche `UTEMA Publish`
-4. définis le raccourci souhaité
-
-### Workflow d'exécution
-
-Quand la commande est lancée :
-
-1. une modale demande un message de commit ;
-2. le plugin valide le dossier cible ;
-3. le plugin vérifie que ce dossier est bien un dépôt Git ;
-4. les fichiers `.md` du dossier sont parcourus récursivement ;
-5. les liens wiki sont convertis si l'option est activée ;
-6. si aucun changement n'est détecté :
-   - message Obsidian : `Aucun changement à publier.`
-7. sinon :
-   - `git add .`
-   - `git commit -m "<message>"`
-   - `git push` ou `git push <remote> <branch>`
-8. si tout se passe bien :
-   - message Obsidian : `Publication terminée.`
-
-## Comportement de conversion des liens
-
-Cas V1 gérés :
+Exemples :
 
 ```md
 [[Ma Page]] -> [Ma Page](Ma%20Page.md)
-[[Ma Page|Texte visible]] -> [Texte visible](Ma%20Page.md)
 [[Dossier/Page]] -> [Dossier/Page](Dossier/Page.md)
+[[Note]] dans docs/index.md -> [Note](../Note.md)
+[[Ma Page|Texte visible]] -> [Texte visible](Ma%20Page.md)
 ```
 
-Comportement actuel :
+Si la cible est ambiguë ou introuvable, le plugin retombe sur un mapping simple vers `<cible>.md`.
 
-- seuls les fichiers `.md` sont traités ;
-- les dossiers `.git`, `.obsidian` et `node_modules` sont ignorés ;
-- les embeds `![[...]]` sont laissés inchangés en V1 ;
-- la cible du lien est convertie en chemin `.md` simple, avec encodage URL des segments ;
-- les fragments simples `#ancre` et `^block` ont une structure prévue, mais restent une prise en charge légère.
+Les embeds de notes Markdown `![[Ma Note]]` restent inchangés.
 
-## Commandes npm utiles
+Les embeds pointant vers des fichiers non-Markdown résolus dans le dossier synchronisé sont convertis en embeds Markdown classiques.
+
+## Configuration
+
+Dans les settings du plugin :
+
+1. `Folder to sync`
+   - chemin relatif dans le vault
+   - exemple : `Publish`
+2. `Remote name`
+   - défaut : `origin`
+3. `Branch name`
+   - défaut : `main`
+4. `Repository URL`
+   - URL Git attendue pour le remote
+   - exemple : `git@github.com:org/repo.git`
+5. `SSH key path`
+   - chemin local vers la clé SSH privée
+   - exemple : `/Users/vous/.ssh/id_ed25519`
+6. `Convert wiki links before sync`
+   - active la conversion avant Git
+7. `Push mode`
+   - `Explicite` : `git push <remote> <branch>`
+   - `Simple` : `git push`
+8. `Dry run`
+   - simule la conversion et la sync Git sans écrire les fichiers ni lancer Git
+
+## Fichier de variables
+
+Le dépôt contient un modèle de variables :
+
+[`utema-sync.config.example.json`](/Users/francoisdelpan/Documents/utema-publish/utema-sync.config.example.json)
+
+Copier ce fichier en `utema-sync.config.json` pour garder vos valeurs locales hors Git :
+
+```json
+{
+  "obsidianVaultPath": "/Users/vous/Documents/MonVaultObsidian",
+  "gitRepoUrl": "git@github.com:votre-compte/votre-repo.git",
+  "gitSshKeyPath": "/Users/vous/.ssh/id_ed25519"
+}
+```
+
+Le plugin ne lit pas ce fichier automatiquement : il sert de fiche de configuration locale pour reporter facilement les valeurs dans les settings Obsidian.
+
+## Utilisation
+
+Commande Obsidian :
+
+```text
+UTEMA Sync Folder To Git
+```
+
+Workflow :
+
+1. saisir un message de commit ;
+2. vérifier que le dossier configuré existe ;
+3. vérifier qu'il s'agit bien d'un dépôt Git ;
+4. convertir les wikilinks des fichiers `.md` ;
+5. lancer `git add`, `git commit`, `git pull --rebase`, puis `git push`.
+
+## Développement local
 
 ```bash
 npm install
@@ -190,21 +110,67 @@ npm run build
 npm run dev
 ```
 
-## Limites connues de la V1
+Pour l'installation locale dans Obsidian, copier le dossier compilé dans :
 
-- pas de résolution avancée du graph Obsidian ;
-- pas de prise en charge complète des cas exotiques de liens ;
-- pas de traitement avancé des embeds `![[...]]` ;
-- pas de rollback multi-fichiers si une erreur survient en plein milieu d'une série de conversions ;
-- le plugin suppose que Git est installé et déjà authentifié localement ;
-- le plugin suppose que le dossier publié est lui-même le dépôt Git cible.
+```text
+<vault>/.obsidian/plugins/utema-publish/
+```
 
-## Pistes de V2
+Fichiers attendus :
 
-- meilleure résolution des chemins Obsidian réels ;
-- support complet de `[[Page#Ancre]]`, `[[Page#Ancre|Alias]]` et `[[Page^blockid]]` ;
-- support de `![[embed]]` ;
-- aperçu des fichiers qui vont être modifiés avant validation finale ;
-- journal détaillé dans une modale de résultat ;
-- option de commit automatique avec message prérempli ;
-- filtres supplémentaires sur les fichiers à publier.
+- `main.js`
+- `manifest.json`
+- `styles.css`
+- `versions.json`
+
+## Limites actuelles
+
+- pas de résolution automatique des conflits Git si le `pull --rebase` échoue ;
+- pas de support complet des embeds de notes Markdown `![[Ma Note]]` ;
+- pas de résolution complète des cas exotiques du graph Obsidian ;
+- en cas de doublon de notes portant le même nom, la conversion garde un fallback simple si la cible n'est pas déterminable sans ambiguïté.
+
+## Mise en route réelle dans Obsidian
+
+1. Préparer le dépôt Git distant.
+   - créer un repo vide sur GitHub, GitLab ou autre
+   - récupérer son URL SSH, par exemple `git@github.com:mon-compte/mes-notes.git`
+2. Créer une clé SSH si vous n'en avez pas.
+   - commande : `ssh-keygen -t ed25519 -C "obsidian-sync"`
+   - accepter le chemin proposé, par exemple `/Users/vous/.ssh/id_ed25519`
+   - copier la clé publique avec `cat ~/.ssh/id_ed25519.pub`
+   - coller cette clé publique dans GitHub ou GitLab, section SSH keys
+3. Préparer le dossier du vault à synchroniser.
+   - dans votre vault Obsidian, créer par exemple `Publish/`
+   - ouvrir un terminal dans ce dossier
+   - lancer `git init`
+   - lancer `git remote add origin <URL_SSH_DU_REPO>`
+   - si besoin, créer la branche principale avec `git branch -M main`
+4. Installer le plugin local dans Obsidian.
+   - builder le plugin avec `npm install` puis `npm run build`
+   - copier ce dossier dans `<votre-vault>/.obsidian/plugins/utema-publish/`
+   - vérifier que `main.js`, `manifest.json` et `styles.css` sont bien présents
+5. Activer le plugin.
+   - dans Obsidian, ouvrir `Settings`
+   - ouvrir `Community plugins`
+   - désactiver `Restricted mode` si nécessaire
+   - activer `UTEMA Sync`
+6. Remplir les settings du plugin.
+   - `Folder to sync` : par exemple `Publish`
+   - `Remote name` : `origin`
+   - `Branch name` : `main`
+   - `Repository URL` : l'URL SSH du repo
+   - `SSH key path` : le chemin de votre clé privée
+   - laisser `Convert wiki links before sync` activé
+7. Faire le premier test.
+   - créer une note dans `Publish/`
+   - ajouter un lien Obsidian comme `[[Une autre note]]`
+   - lancer la commande `UTEMA Sync Folder To Git`
+   - saisir un message de commit
+8. Vérifier le résultat.
+   - le plugin convertit les liens en `.md`
+   - il commit les changements locaux
+   - il exécute ensuite `git pull --rebase origin main`
+   - puis il pousse avec `git push origin main`
+
+Si le premier `pull --rebase` échoue parce que le repo distant est vide ou n'a pas encore de branche initiale, faire un premier push manuel depuis le terminal après le premier commit local.

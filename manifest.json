@@ -1,9 +1,9 @@
 {
   "id": "utema-publish",
-  "name": "UTEMA Publish",
+  "name": "UTEMA Sync",
   "version": "0.1.0",
   "minAppVersion": "1.5.0",
-  "description": "Convertit les liens wiki d'un dossier puis publie les changements via Git local.",
+  "description": "Synchronise un dossier Obsidian avec un dépôt Git local en convertissant les liens internes en liens .md.",
   "author": "UTEMA",
   "authorUrl": "",
   "isDesktopOnly": true

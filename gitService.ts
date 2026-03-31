@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { promises as fs } from "node:fs";
 import { promisify } from "node:util";
 import type { PushMode } from "./settings";
 
@@ -15,6 +16,8 @@ export interface GitPublishOptions {
   commitMessage: string;
   remoteName: string;
   branchName: string;
+  repoUrl: string;
+  sshKeyPath: string;
   pushMode: PushMode;
   dryRun: boolean;
 }
@@ -22,7 +25,14 @@ export interface GitPublishOptions {
 export interface GitPublishSummary {
   dryRun: boolean;
   hadChanges: boolean;
+  pulledRemoteChanges: boolean;
+  pushedLocalChanges: boolean;
   commands: string[];
+}
+
+interface GitExecutionOptions {
+  workingDirectory: string;
+  sshKeyPath?: string;
 }
 
 export class GitServiceError extends Error {
@@ -45,7 +55,9 @@ export class GitServiceError extends Error {
 }
 
 export async function ensureGitRepository(workingDirectory: string): Promise<void> {
-  const result = await runGitCommand(["rev-parse", "--is-inside-work-tree"], workingDirectory);
+  const result = await runGitCommand(["rev-parse", "--is-inside-work-tree"], {
+    workingDirectory,
+  });
 
   if (result.stdout.trim() !== "true") {
     throw new GitServiceError(
@@ -61,62 +73,154 @@ export async function publishWithGit(
   options: GitPublishOptions,
 ): Promise<GitPublishSummary> {
   const commands: string[] = [];
-  const statusBefore = await getStatusSummary(options.workingDirectory);
+  const executionOptions: GitExecutionOptions = {
+    workingDirectory: options.workingDirectory,
+    sshKeyPath: normalizeOptionalValue(options.sshKeyPath),
+  };
+
+  if (executionOptions.sshKeyPath) {
+    await ensureReadableSshKey(executionOptions.sshKeyPath);
+  }
+
+  const normalizedRepoUrl = normalizeOptionalValue(options.repoUrl);
+  if (normalizedRepoUrl && !options.dryRun) {
+    await ensureRemoteConfigured(options.remoteName, normalizedRepoUrl, executionOptions);
+  } else if (normalizedRepoUrl) {
+    commands.push(`# remote attendu: ${options.remoteName} -> ${normalizedRepoUrl}`);
+  }
+
+  const statusBefore = await getStatusSummary(executionOptions);
+  const pullCommand = buildPullCommandLabel(options.remoteName, options.branchName);
+  let pulledRemoteChanges = false;
 
   if (!statusBefore) {
+    commands.push(pullCommand);
+
+    if (!options.dryRun) {
+      pulledRemoteChanges = await pullLatestChanges(
+        options.remoteName,
+        options.branchName,
+        executionOptions,
+      );
+    }
+
     return {
       dryRun: options.dryRun,
-      hadChanges: false,
+      hadChanges: pulledRemoteChanges,
+      pulledRemoteChanges,
+      pushedLocalChanges: false,
       commands,
     };
   }
 
   commands.push("git add .");
+  commands.push(`git commit -m "${options.commitMessage}"`);
+  commands.push(pullCommand);
+  commands.push(buildPushCommandLabel(options.pushMode, options.remoteName, options.branchName));
 
   if (options.dryRun) {
-    commands.push(`git commit -m "${options.commitMessage}"`);
-    commands.push(buildPushCommandLabel(options.pushMode, options.remoteName, options.branchName));
     return {
       dryRun: true,
       hadChanges: true,
+      pulledRemoteChanges: false,
+      pushedLocalChanges: true,
       commands,
     };
   }
 
-  await runGitCommand(["add", "."], options.workingDirectory);
+  await runGitCommand(["add", "."], executionOptions);
 
-  commands.push(`git commit -m "${options.commitMessage}"`);
   try {
-    await runGitCommand(["commit", "-m", options.commitMessage], options.workingDirectory);
+    await runGitCommand(["commit", "-m", options.commitMessage], executionOptions);
   } catch (error) {
-    if (isNothingToCommitError(error)) {
-      return {
-        dryRun: false,
-        hadChanges: false,
-        commands,
-      };
+    if (!isNothingToCommitError(error)) {
+      throw error;
     }
-
-    throw error;
   }
+
+  pulledRemoteChanges = await pullLatestChanges(
+    options.remoteName,
+    options.branchName,
+    executionOptions,
+  );
 
   const pushArgs =
     options.pushMode === "simple"
       ? ["push"]
       : ["push", options.remoteName, options.branchName];
-
-  commands.push(buildPushCommandLabel(options.pushMode, options.remoteName, options.branchName));
-  await runGitCommand(pushArgs, options.workingDirectory);
+  await runGitCommand(pushArgs, executionOptions);
 
   return {
     dryRun: false,
     hadChanges: true,
+    pulledRemoteChanges,
+    pushedLocalChanges: true,
     commands,
   };
 }
 
-async function getStatusSummary(workingDirectory: string): Promise<string> {
-  const result = await runGitCommand(["status", "--porcelain"], workingDirectory);
+async function ensureReadableSshKey(sshKeyPath: string): Promise<void> {
+  try {
+    const stats = await fs.stat(sshKeyPath);
+    if (!stats.isFile()) {
+      throw new Error("not-a-file");
+    }
+  } catch {
+    throw new Error(`Clé SSH introuvable ou illisible: ${sshKeyPath}`);
+  }
+}
+
+async function ensureRemoteConfigured(
+  remoteName: string,
+  repoUrl: string,
+  executionOptions: GitExecutionOptions,
+): Promise<void> {
+  const currentRemoteUrl = await getRemoteUrl(remoteName, executionOptions);
+
+  if (!currentRemoteUrl) {
+    await runGitCommand(["remote", "add", remoteName, repoUrl], executionOptions);
+    return;
+  }
+
+  if (currentRemoteUrl !== repoUrl) {
+    throw new Error(
+      `Le remote ${remoteName} pointe vers ${currentRemoteUrl}, mais la configuration demande ${repoUrl}.`,
+    );
+  }
+}
+
+async function getRemoteUrl(
+  remoteName: string,
+  executionOptions: GitExecutionOptions,
+): Promise<string | null> {
+  try {
+    const result = await runGitCommand(["remote", "get-url", remoteName], executionOptions);
+    return result.stdout.trim() || null;
+  } catch (error) {
+    if (isMissingRemoteError(error)) {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+async function pullLatestChanges(
+  remoteName: string,
+  branchName: string,
+  executionOptions: GitExecutionOptions,
+): Promise<boolean> {
+  const result = await runGitCommand(
+    ["pull", "--rebase", remoteName, branchName],
+    executionOptions,
+  );
+
+  const combinedOutput = `${result.stdout}\n${result.stderr}`.toLowerCase();
+  return !combinedOutput.includes("already up to date");
+}
+
+async function getStatusSummary(executionOptions: GitExecutionOptions): Promise<string> {
+  const result = await runGitCommand(["status", "--porcelain"], executionOptions);
   return result.stdout.trim();
 }
 
@@ -132,15 +236,25 @@ function isNothingToCommitError(error: unknown): boolean {
   );
 }
 
+function isMissingRemoteError(error: unknown): boolean {
+  if (!(error instanceof GitServiceError)) {
+    return false;
+  }
+
+  const combinedOutput = `${error.stdout}\n${error.stderr}`.toLowerCase();
+  return combinedOutput.includes("no such remote");
+}
+
 async function runGitCommand(
   args: string[],
-  workingDirectory: string,
+  executionOptions: GitExecutionOptions,
 ): Promise<GitCommandResult> {
   const commandLabel = `git ${args.join(" ")}`;
 
   try {
     const result = await execFileAsync("git", args, {
-      cwd: workingDirectory,
+      cwd: executionOptions.workingDirectory,
+      env: buildGitEnvironment(executionOptions.sshKeyPath),
       windowsHide: true,
       maxBuffer: 1024 * 1024,
     });
@@ -169,6 +283,22 @@ async function runGitCommand(
   }
 }
 
+function buildGitEnvironment(sshKeyPath?: string): NodeJS.ProcessEnv {
+  if (!sshKeyPath) {
+    return { ...process.env };
+  }
+
+  const escapedPath = sshKeyPath.replace(/"/g, '\\"');
+  return {
+    ...process.env,
+    GIT_SSH_COMMAND: `ssh -i "${escapedPath}" -o IdentitiesOnly=yes`,
+  };
+}
+
+function buildPullCommandLabel(remoteName: string, branchName: string): string {
+  return `git pull --rebase ${remoteName} ${branchName}`;
+}
+
 function buildPushCommandLabel(
   pushMode: PushMode,
   remoteName: string,
@@ -177,4 +307,8 @@ function buildPushCommandLabel(
   return pushMode === "simple"
     ? "git push"
     : `git push ${remoteName} ${branchName}`;
+}
+
+function normalizeOptionalValue(value: string): string {
+  return value.trim();
 }

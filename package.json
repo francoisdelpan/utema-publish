@@ -1,7 +1,7 @@
 {
   "name": "utema-publish",
   "version": "0.1.0",
-  "description": "Local-first Obsidian plugin to convert wiki links and publish with Git.",
+  "description": "Local-first Obsidian plugin to sync an Obsidian folder with Git and convert internal links to .md links.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
@@ -11,7 +11,9 @@
     "obsidian",
     "plugin",
     "git",
-    "publish"
+    "publish",
+    "sync",
+    "markdown"
   ],
   "author": "Local internal plugin",
   "license": "UNLICENSED",
