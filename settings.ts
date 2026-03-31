@@ -9,6 +9,7 @@ export interface UtemaPublishSettings {
   branchName: string;
   repoUrl: string;
   sshKeyPath: string;
+  missingLinkFallbackPath: string;
   convertWikiLinksBeforePublish: boolean;
   pushMode: PushMode;
   dryRun: boolean;
@@ -20,6 +21,7 @@ export const DEFAULT_SETTINGS: UtemaPublishSettings = {
   branchName: "main",
   repoUrl: "",
   sshKeyPath: "",
+  missingLinkFallbackPath: "404.md",
   convertWikiLinksBeforePublish: true,
   pushMode: "explicit",
   dryRun: false,
@@ -100,6 +102,19 @@ export class UtemaPublishSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.sshKeyPath)
           .onChange(async (value) => {
             this.plugin.settings.sshKeyPath = value.trim();
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Missing link fallback")
+      .setDesc("Chemin Markdown à utiliser si une note ciblée n'existe pas dans le dossier synchronisé.")
+      .addText((text) =>
+        text
+          .setPlaceholder("404.md")
+          .setValue(this.plugin.settings.missingLinkFallbackPath)
+          .onChange(async (value) => {
+            this.plugin.settings.missingLinkFallbackPath = value.trim();
             await this.plugin.saveSettings();
           }),
       );

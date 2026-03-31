@@ -19,7 +19,7 @@ Document de référence pour les conversions réalisées par le plugin lors de l
 
 | Obsidian | GitHub |
 | --- | --- |
-| `[[Note]]` | `[Note](Note.md)` |
+| `[[Note]]` | `[Note](Note.md)` ou fallback `404.md` si absent |
 | `[[Dossier/Note]]` | `[Dossier/Note](Dossier/Note.md)` |
 | `[[Note\|Alias]]` | `[Alias](Note.md)` |
 | `[[Note#Section]]` | `[Note#Section](Note.md#Section)` |
@@ -85,6 +85,10 @@ Document de référence pour les conversions réalisées par le plugin lors de l
 - embeds de notes Markdown `![[Ma Note]]`
 - cas ambigus quand plusieurs notes portent le même nom et qu'aucun chemin exact ne permet de trancher
 - comportements Obsidian très spécifiques sans rendu GitHub fidèle
+
+## Fallback des liens absents
+
+Si une note visée n'existe pas dans le dossier synchronisé, le plugin ne tente plus de fabriquer un lien fictif vers cette note et redirige vers une page Markdown de fallback configurable, par défaut `404.md`.
 
 ## Pistes de suite
 

@@ -39,7 +39,7 @@ Exemples :
 ![[image.png|640x480]] -> ![image.png](image.png =640x480)
 ```
 
-Si la cible est ambiguë ou introuvable, le plugin retombe sur un mapping simple vers `<cible>.md`.
+Si la cible n'existe pas dans le dossier synchronisé, le plugin pointe vers une page de fallback configurable, par défaut `404.md`.
 
 Les embeds de notes Markdown `![[Ma Note]]` restent inchangés.
 
@@ -113,13 +113,30 @@ Dans les settings du plugin :
 5. `SSH key path`
    - chemin local vers la clé SSH privée
    - exemple : `/Users/vous/.ssh/id_ed25519`
-6. `Convert wiki links before sync`
+6. `Missing link fallback`
+   - page Markdown de repli pour les liens vers des notes hors dossier publié
+   - exemple : `404.md`
+7. `Convert wiki links before sync`
    - active la conversion avant Git
-7. `Push mode`
+8. `Push mode`
    - `Explicite` : `git push <remote> <branch>`
    - `Simple` : `git push`
-8. `Dry run`
+9. `Dry run`
    - simule la conversion et la sync Git sans écrire les fichiers ni lancer Git
+
+## Fallback 404
+
+Si une note cible n'est pas présente dans le dossier synchronisé, le lien converti pointera vers la page définie dans `Missing link fallback`.
+
+Exemple de page `404.md` dans le repo publié :
+
+```md
+# Document non disponible
+
+Cette page n'est pas publiée dans cet espace.
+
+Retour au [README](README.md).
+```
 
 ## Fichier de variables
 

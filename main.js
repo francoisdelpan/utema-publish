@@ -322,7 +322,7 @@ var import_node_fs2 = require("node:fs");
 var path = __toESM(require("node:path"));
 var IGNORED_DIRECTORIES = /* @__PURE__ */ new Set([".git", ".obsidian", "node_modules"]);
 var TEMP_FILE_SUFFIX = ".tmp-utema-sync";
-async function convertWikiLinksInDirectory(directoryPath, options = { writeChanges: true }) {
+async function convertWikiLinksInDirectory(directoryPath, options = { writeChanges: true, missingLinkFallbackPath: "404.md" }) {
   const markdownFiles = await collectMarkdownFiles(directoryPath);
   const allFiles = await collectFiles(directoryPath);
   const context = {
@@ -330,7 +330,8 @@ async function convertWikiLinksInDirectory(directoryPath, options = { writeChang
     markdownFiles,
     allFiles,
     markdownResolver: createLinkResolver(directoryPath, markdownFiles),
-    fileResolver: createLinkResolver(directoryPath, allFiles)
+    fileResolver: createLinkResolver(directoryPath, allFiles),
+    missingLinkFallbackPath: normalizeFallbackPath(options.missingLinkFallbackPath)
   };
   const changedRelativePaths = [];
   for (const filePath of markdownFiles) {
@@ -401,7 +402,8 @@ function convertWikiLinks(content, currentFilePath, context) {
       resolve(target) {
         return normalizeLinkTarget(target) || null;
       }
-    }
+    },
+    missingLinkFallbackPath: "404.md"
   };
   const convertedLinks = content.replace(/(!)?\[\[([^[\]]+?)\]\]/g, (match, embedPrefix, inner) => {
     const parsed = parseWikiLink(inner);
@@ -468,7 +470,7 @@ function ensureMarkdownExtension(target) {
   return target.toLowerCase().endsWith(".md") ? target : `${target}.md`;
 }
 function buildRelativeMarkdownPath(rawTarget, currentFilePath, context) {
-  const resolvedTarget = context.markdownResolver.resolve(rawTarget) ?? ensureMarkdownExtension(normalizeLinkTarget(rawTarget));
+  const resolvedTarget = context.markdownResolver.resolve(rawTarget) ?? context.missingLinkFallbackPath;
   if (!currentFilePath || !context.rootDirectory) {
     return resolvedTarget;
   }
@@ -563,6 +565,13 @@ function stripMarkdownExtension(value) {
 }
 function normalizeLinkTarget(value) {
   return toPosixPath(value.trim()).replace(/^(\.\/)+/, "").replace(/^\/+/, "");
+}
+function normalizeFallbackPath(value) {
+  const normalized = normalizeLinkTarget(value ?? "");
+  if (!normalized) {
+    return "404.md";
+  }
+  return normalized.toLowerCase().endsWith(".md") ? normalized : `${normalized}.md`;
 }
 function toPosixPath(value) {
   return value.replace(/\\/g, "/");
@@ -675,6 +684,7 @@ var DEFAULT_SETTINGS = {
   branchName: "main",
   repoUrl: "",
   sshKeyPath: "",
+  missingLinkFallbackPath: "404.md",
   convertWikiLinksBeforePublish: true,
   pushMode: "explicit",
   dryRun: false
@@ -715,6 +725,12 @@ var UtemaPublishSettingTab = class extends import_obsidian2.PluginSettingTab {
     new import_obsidian2.Setting(containerEl).setName("SSH key path").setDesc("Chemin local vers la cl\xE9 SSH priv\xE9e \xE0 utiliser pour Git. Optionnel.").addText(
       (text) => text.setPlaceholder("/Users/vous/.ssh/id_ed25519").setValue(this.plugin.settings.sshKeyPath).onChange(async (value) => {
         this.plugin.settings.sshKeyPath = value.trim();
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian2.Setting(containerEl).setName("Missing link fallback").setDesc("Chemin Markdown \xE0 utiliser si une note cibl\xE9e n'existe pas dans le dossier synchronis\xE9.").addText(
+      (text) => text.setPlaceholder("404.md").setValue(this.plugin.settings.missingLinkFallbackPath).onChange(async (value) => {
+        this.plugin.settings.missingLinkFallbackPath = value.trim();
         await this.plugin.saveSettings();
       })
     );
@@ -789,7 +805,8 @@ var UtemaPublishPlugin = class extends import_obsidian3.Plugin {
       await ensureExistingDirectory(publishDirectory);
       await ensureGitRepository(publishDirectory);
       const conversionSummary = this.settings.convertWikiLinksBeforePublish ? await convertWikiLinksInDirectory(publishDirectory, {
-        writeChanges: !this.settings.dryRun
+        writeChanges: !this.settings.dryRun,
+        missingLinkFallbackPath: this.settings.missingLinkFallbackPath.trim() || DEFAULT_SETTINGS.missingLinkFallbackPath
       }) : {
         scannedFiles: 0,
         changedFiles: 0,

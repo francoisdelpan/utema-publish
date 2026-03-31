@@ -78,6 +78,9 @@ export default class UtemaPublishPlugin extends Plugin {
       const conversionSummary = this.settings.convertWikiLinksBeforePublish
         ? await convertWikiLinksInDirectory(publishDirectory, {
             writeChanges: !this.settings.dryRun,
+            missingLinkFallbackPath:
+              this.settings.missingLinkFallbackPath.trim()
+              || DEFAULT_SETTINGS.missingLinkFallbackPath,
           })
         : {
             scannedFiles: 0,

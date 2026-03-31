@@ -12,6 +12,7 @@ export interface LinkConversionSummary {
 
 export interface LinkConversionOptions {
   writeChanges: boolean;
+  missingLinkFallbackPath?: string;
 }
 
 interface ParsedWikiLink {
@@ -32,6 +33,7 @@ interface ConversionContext {
   allFiles: string[];
   markdownResolver: LinkResolver;
   fileResolver: LinkResolver;
+  missingLinkFallbackPath: string;
 }
 
 interface LinkResolver {
@@ -40,7 +42,7 @@ interface LinkResolver {
 
 export async function convertWikiLinksInDirectory(
   directoryPath: string,
-  options: LinkConversionOptions = { writeChanges: true },
+  options: LinkConversionOptions = { writeChanges: true, missingLinkFallbackPath: "404.md" },
 ): Promise<LinkConversionSummary> {
   const markdownFiles = await collectMarkdownFiles(directoryPath);
   const allFiles = await collectFiles(directoryPath);
@@ -50,6 +52,7 @@ export async function convertWikiLinksInDirectory(
     allFiles,
     markdownResolver: createLinkResolver(directoryPath, markdownFiles),
     fileResolver: createLinkResolver(directoryPath, allFiles),
+    missingLinkFallbackPath: normalizeFallbackPath(options.missingLinkFallbackPath),
   };
   const changedRelativePaths: string[] = [];
 
@@ -154,6 +157,7 @@ export function convertWikiLinks(
           return normalizeLinkTarget(target) || null;
         },
       },
+      missingLinkFallbackPath: "404.md",
     } satisfies ConversionContext);
 
   const convertedLinks = content.replace(/(!)?\[\[([^[\]]+?)\]\]/g, (match, embedPrefix, inner) => {
@@ -252,8 +256,7 @@ function buildRelativeMarkdownPath(
   context: ConversionContext,
 ): string {
   const resolvedTarget =
-    context.markdownResolver.resolve(rawTarget) ??
-    ensureMarkdownExtension(normalizeLinkTarget(rawTarget));
+    context.markdownResolver.resolve(rawTarget) ?? context.missingLinkFallbackPath;
 
   if (!currentFilePath || !context.rootDirectory) {
     return resolvedTarget;
@@ -382,6 +385,15 @@ function stripMarkdownExtension(value: string): string {
 
 function normalizeLinkTarget(value: string): string {
   return toPosixPath(value.trim()).replace(/^(\.\/)+/, "").replace(/^\/+/, "");
+}
+
+function normalizeFallbackPath(value?: string): string {
+  const normalized = normalizeLinkTarget(value ?? "");
+  if (!normalized) {
+    return "404.md";
+  }
+
+  return normalized.toLowerCase().endsWith(".md") ? normalized : `${normalized}.md`;
 }
 
 function toPosixPath(value: string): string {
