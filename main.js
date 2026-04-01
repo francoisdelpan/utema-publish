@@ -680,6 +680,7 @@ async function writeFileAtomically(filePath, content) {
 var import_obsidian2 = require("obsidian");
 var DEFAULT_SETTINGS = {
   publishFolder: "Publish",
+  autoMoveFolder: "",
   remoteName: "origin",
   branchName: "main",
   repoUrl: "",
@@ -701,6 +702,12 @@ var UtemaPublishSettingTab = class extends import_obsidian2.PluginSettingTab {
     new import_obsidian2.Setting(containerEl).setName("Folder to sync").setDesc("Chemin relatif dans le vault vers le dossier suivi par Git.").addText(
       (text) => text.setPlaceholder("Publish").setValue(this.plugin.settings.publishFolder).onChange(async (value) => {
         this.plugin.settings.publishFolder = value.trim();
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian2.Setting(containerEl).setName("Auto moving files folder").setDesc("Dossier racine utilis\xE9 par la commande de d\xE9placement rapide. La commande proposera ses sous-dossiers dans une mini-modale.").addText(
+      (text) => text.setPlaceholder("Inbox/Reviewed").setValue(this.plugin.settings.autoMoveFolder).onChange(async (value) => {
+        this.plugin.settings.autoMoveFolder = value.trim();
         await this.plugin.saveSettings();
       })
     );
@@ -772,6 +779,13 @@ var UtemaPublishPlugin = class extends import_obsidian3.Plugin {
         }).open();
       }
     });
+    this.addCommand({
+      id: "utema-move-active-file-to-auto-folder",
+      name: "UTEMA Move Active File To Auto Folder",
+      callback: () => {
+        void this.moveActiveFileToAutoFolder();
+      }
+    });
     this.addSettingTab(new UtemaPublishSettingTab(this.app, this));
   }
   async loadSettings() {
@@ -783,6 +797,46 @@ var UtemaPublishPlugin = class extends import_obsidian3.Plugin {
   }
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+  async moveActiveFileToAutoFolder() {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile) {
+      new import_obsidian3.Notice("Aucun fichier actif \xE0 d\xE9placer.");
+      return;
+    }
+    const autoMoveRootFolder = (0, import_obsidian3.normalizePath)(this.settings.autoMoveFolder.trim());
+    if (!autoMoveRootFolder) {
+      new import_obsidian3.Notice("Le dossier racine 'Auto moving files folder' n'est pas configur\xE9.");
+      return;
+    }
+    try {
+      await ensureVaultFolderExists(this.app, autoMoveRootFolder);
+      const availableFolders = collectSubfolders(
+        this.app,
+        autoMoveRootFolder
+      );
+      if (availableFolders.length === 0) {
+        new import_obsidian3.Notice("Aucun dossier disponible dans la racine configur\xE9e.");
+        return;
+      }
+      new FolderSelectionModal(
+        this.app,
+        autoMoveRootFolder,
+        availableFolders,
+        async (selectedFolder) => {
+          const destinationPath = await this.getAvailableDestinationPath(activeFile, selectedFolder);
+          if (destinationPath === activeFile.path) {
+            new import_obsidian3.Notice("Le fichier est d\xE9j\xE0 dans le dossier cible.");
+            return;
+          }
+          await this.app.fileManager.renameFile(activeFile, destinationPath);
+          new import_obsidian3.Notice(`Fichier d\xE9plac\xE9 vers ${destinationPath}.`);
+        }
+      ).open();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Impossible de d\xE9placer le fichier actif.";
+      new import_obsidian3.Notice(message, 1e4);
+    }
   }
   async runSyncWorkflow(commitMessage) {
     const publishFolder = this.settings.publishFolder.trim();
@@ -859,6 +913,50 @@ var UtemaPublishPlugin = class extends import_obsidian3.Plugin {
     }
     return "Une erreur inconnue est survenue pendant la synchronisation.";
   }
+  async getAvailableDestinationPath(file, targetFolder) {
+    const extensionSuffix = file.extension ? `.${file.extension}` : "";
+    const baseName = extensionSuffix ? file.name.slice(0, -extensionSuffix.length) : file.name;
+    let candidatePath = (0, import_obsidian3.normalizePath)(`${targetFolder}/${file.name}`);
+    let counter = 1;
+    while (this.app.vault.getAbstractFileByPath(candidatePath)) {
+      if (candidatePath === file.path) {
+        return candidatePath;
+      }
+      candidatePath = (0, import_obsidian3.normalizePath)(
+        `${targetFolder}/${baseName} ${counter}${extensionSuffix}`
+      );
+      counter += 1;
+    }
+    return candidatePath;
+  }
+};
+var FolderSelectionModal = class extends import_obsidian3.FuzzySuggestModal {
+  constructor(app, rootFolder, folders, onChoose) {
+    super(app);
+    this.rootFolder = rootFolder;
+    this.folders = folders;
+    this.onChoose = onChoose;
+    this.setPlaceholder("Choisir un dossier de destination");
+    this.emptyStateText = "Aucun dossier trouv\xE9.";
+    this.setInstructions([
+      { command: "\u2191\u2193", purpose: "Naviguer" },
+      { command: "\u21B5", purpose: "D\xE9placer le fichier" },
+      { command: "esc", purpose: "Annuler" }
+    ]);
+  }
+  getItems() {
+    return this.folders;
+  }
+  getItemText(item) {
+    return toRelativeFolderLabel(item, this.rootFolder);
+  }
+  onChooseItem(item, _evt) {
+    void this.onChoose(item);
+  }
+  renderSuggestion(item, el) {
+    el.createEl("div", { text: toRelativeFolderLabel(item.item, this.rootFolder) });
+    el.createEl("small", { text: item.item });
+  }
 };
 async function ensureExistingDirectory(directoryPath) {
   let stats;
@@ -870,4 +968,57 @@ async function ensureExistingDirectory(directoryPath) {
   if (!stats.isDirectory()) {
     throw new Error(`Le chemin configur\xE9 n'est pas un dossier: ${directoryPath}`);
   }
+}
+async function ensureVaultFolderExists(app, folderPath) {
+  const normalizedFolderPath = (0, import_obsidian3.normalizePath)(folderPath);
+  if (!normalizedFolderPath) {
+    throw new Error("Le dossier cible est vide.");
+  }
+  const existing = app.vault.getAbstractFileByPath(normalizedFolderPath);
+  if (existing instanceof import_obsidian3.TFolder) {
+    return;
+  }
+  if (existing) {
+    throw new Error(`Le chemin cible existe d\xE9j\xE0 et n'est pas un dossier: ${normalizedFolderPath}`);
+  }
+  const segments = normalizedFolderPath.split("/");
+  let currentPath = "";
+  for (const segment of segments) {
+    currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+    const current = app.vault.getAbstractFileByPath(currentPath);
+    if (current instanceof import_obsidian3.TFolder) {
+      continue;
+    }
+    if (current) {
+      throw new Error(`Impossible de cr\xE9er le dossier ${currentPath}: un fichier existe d\xE9j\xE0.`);
+    }
+    await app.vault.createFolder(currentPath);
+  }
+}
+function collectSubfolders(app, rootFolderPath) {
+  const root = app.vault.getAbstractFileByPath(rootFolderPath);
+  if (!(root instanceof import_obsidian3.TFolder)) {
+    return [];
+  }
+  const folders = [root.path];
+  const stack = [root];
+  while (stack.length > 0) {
+    const currentFolder = stack.pop();
+    if (!currentFolder) {
+      continue;
+    }
+    const childFolders = currentFolder.children.filter((child) => child instanceof import_obsidian3.TFolder).sort((left, right) => left.path.localeCompare(right.path));
+    for (const childFolder of childFolders) {
+      folders.push(childFolder.path);
+      stack.push(childFolder);
+    }
+  }
+  return folders;
+}
+function toRelativeFolderLabel(folderPath, rootFolderPath) {
+  if (folderPath === rootFolderPath) {
+    return ".";
+  }
+  const rootPrefix = `${rootFolderPath}/`;
+  return folderPath.startsWith(rootPrefix) ? folderPath.slice(rootPrefix.length) : folderPath;
 }

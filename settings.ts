@@ -58,7 +58,7 @@ export class UtemaPublishSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Auto moving files folder")
-      .setDesc("Dossier cible utilisé par la commande de déplacement rapide du fichier actif.")
+      .setDesc("Dossier racine utilisé par la commande de déplacement rapide. La commande proposera ses sous-dossiers dans une mini-modale.")
       .addText((text) =>
         text
           .setPlaceholder("Inbox/Reviewed")

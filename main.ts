@@ -2,6 +2,8 @@ import * as path from "node:path";
 import { promises as fs } from "node:fs";
 import {
   FileSystemAdapter,
+  FuzzySuggestModal,
+  FuzzyMatch,
   Notice,
   Plugin,
   TFolder,
@@ -67,23 +69,39 @@ export default class UtemaPublishPlugin extends Plugin {
       return;
     }
 
-    const autoMoveFolder = normalizePath(this.settings.autoMoveFolder.trim());
-    if (!autoMoveFolder) {
-      new Notice("Le dossier 'Auto moving files folder' n'est pas configuré.");
+    const autoMoveRootFolder = normalizePath(this.settings.autoMoveFolder.trim());
+    if (!autoMoveRootFolder) {
+      new Notice("Le dossier racine 'Auto moving files folder' n'est pas configuré.");
       return;
     }
 
     try {
-      await ensureVaultFolderExists(this.app, autoMoveFolder);
+      await ensureVaultFolderExists(this.app, autoMoveRootFolder);
+      const availableFolders = collectSubfolders(
+        this.app,
+        autoMoveRootFolder,
+      );
 
-      const destinationPath = await this.getAvailableDestinationPath(activeFile, autoMoveFolder);
-      if (destinationPath === activeFile.path) {
-        new Notice("Le fichier est déjà dans le dossier cible.");
+      if (availableFolders.length === 0) {
+        new Notice("Aucun dossier disponible dans la racine configurée.");
         return;
       }
 
-      await this.app.fileManager.renameFile(activeFile, destinationPath);
-      new Notice(`Fichier déplacé vers ${destinationPath}.`);
+      new FolderSelectionModal(
+        this.app,
+        autoMoveRootFolder,
+        availableFolders,
+        async (selectedFolder) => {
+          const destinationPath = await this.getAvailableDestinationPath(activeFile, selectedFolder);
+          if (destinationPath === activeFile.path) {
+            new Notice("Le fichier est déjà dans le dossier cible.");
+            return;
+          }
+
+          await this.app.fileManager.renameFile(activeFile, destinationPath);
+          new Notice(`Fichier déplacé vers ${destinationPath}.`);
+        },
+      ).open();
     } catch (error) {
       const message = error instanceof Error
         ? error.message
@@ -219,6 +237,48 @@ export default class UtemaPublishPlugin extends Plugin {
   }
 }
 
+class FolderSelectionModal extends FuzzySuggestModal<string> {
+  private readonly rootFolder: string;
+  private readonly folders: string[];
+  private readonly onChoose: (folderPath: string) => Promise<void> | void;
+
+  constructor(
+    app: Plugin["app"],
+    rootFolder: string,
+    folders: string[],
+    onChoose: (folderPath: string) => Promise<void> | void,
+  ) {
+    super(app);
+    this.rootFolder = rootFolder;
+    this.folders = folders;
+    this.onChoose = onChoose;
+    this.setPlaceholder("Choisir un dossier de destination");
+    this.emptyStateText = "Aucun dossier trouvé.";
+    this.setInstructions([
+      { command: "↑↓", purpose: "Naviguer" },
+      { command: "↵", purpose: "Déplacer le fichier" },
+      { command: "esc", purpose: "Annuler" },
+    ]);
+  }
+
+  getItems(): string[] {
+    return this.folders;
+  }
+
+  getItemText(item: string): string {
+    return toRelativeFolderLabel(item, this.rootFolder);
+  }
+
+  onChooseItem(item: string, _evt: MouseEvent | KeyboardEvent): void {
+    void this.onChoose(item);
+  }
+
+  renderSuggestion(item: FuzzyMatch<string>, el: HTMLElement): void {
+    el.createEl("div", { text: toRelativeFolderLabel(item.item, this.rootFolder) });
+    el.createEl("small", { text: item.item });
+  }
+}
+
 async function ensureExistingDirectory(directoryPath: string): Promise<void> {
   let stats;
 
@@ -268,4 +328,43 @@ async function ensureVaultFolderExists(
 
     await app.vault.createFolder(currentPath);
   }
+}
+
+function collectSubfolders(app: Plugin["app"], rootFolderPath: string): string[] {
+  const root = app.vault.getAbstractFileByPath(rootFolderPath);
+  if (!(root instanceof TFolder)) {
+    return [];
+  }
+
+  const folders: string[] = [root.path];
+  const stack: TFolder[] = [root];
+
+  while (stack.length > 0) {
+    const currentFolder = stack.pop();
+    if (!currentFolder) {
+      continue;
+    }
+
+    const childFolders = currentFolder.children
+      .filter((child): child is TFolder => child instanceof TFolder)
+      .sort((left, right) => left.path.localeCompare(right.path));
+
+    for (const childFolder of childFolders) {
+      folders.push(childFolder.path);
+      stack.push(childFolder);
+    }
+  }
+
+  return folders;
+}
+
+function toRelativeFolderLabel(folderPath: string, rootFolderPath: string): string {
+  if (folderPath === rootFolderPath) {
+    return ".";
+  }
+
+  const rootPrefix = `${rootFolderPath}/`;
+  return folderPath.startsWith(rootPrefix)
+    ? folderPath.slice(rootPrefix.length)
+    : folderPath;
 }

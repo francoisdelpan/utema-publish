@@ -104,7 +104,7 @@ Dans les settings du plugin :
    - chemin relatif dans le vault
    - exemple : `Publish`
 2. `Auto moving files folder`
-   - dossier cible utilisé par la commande de déplacement rapide du fichier actif
+   - dossier racine utilisé par la commande de déplacement rapide du fichier actif
    - exemple : `Inbox/Reviewed`
 3. `Remote name`
    - défaut : `origin`
@@ -173,7 +173,7 @@ Commande supplémentaire :
 UTEMA Move Active File To Auto Folder
 ```
 
-Cette commande prend le fichier actuellement ouvert, crée le dossier cible si besoin, puis le déplace dedans. Si un fichier du même nom existe déjà, le plugin ajoute un suffixe numérique au nom.
+Cette commande prend le fichier actuellement ouvert, ouvre une mini-modale listant tous les sous-dossiers du dossier racine configuré, puis déplace le fichier dans le dossier sélectionné. Si un fichier du même nom existe déjà, le plugin ajoute un suffixe numérique au nom.
 
 Workflow :
 
