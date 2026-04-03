@@ -16,7 +16,10 @@ import {
   GitServiceError,
   publishWithGit,
 } from "./gitService";
-import { convertWikiLinksInDirectory } from "./linkConverter";
+import {
+  convertMarkdownLinksToObsidianInDirectory,
+  convertWikiLinksInDirectory,
+} from "./linkConverter";
 import {
   DEFAULT_SETTINGS,
   UtemaPublishSettingTab,
@@ -44,6 +47,14 @@ export default class UtemaPublishPlugin extends Plugin {
       name: "UTEMA Move Active File To Auto Folder",
       callback: () => {
         void this.moveActiveFileToAutoFolder();
+      },
+    });
+
+    this.addCommand({
+      id: "utema-remap-folder-to-obsidian-links",
+      name: "UTEMA Remap Folder To Obsidian Links",
+      callback: () => {
+        void this.remapFolderToObsidianLinks();
       },
     });
 
@@ -180,6 +191,51 @@ export default class UtemaPublishPlugin extends Plugin {
     } catch (error) {
       const message = this.formatErrorMessage(error);
       console.error("[UTEMA Sync] Sync failed", error);
+      new Notice(message, 10000);
+    }
+  }
+
+  private async remapFolderToObsidianLinks(): Promise<void> {
+    const publishFolder = this.settings.publishFolder.trim();
+
+    if (!publishFolder) {
+      new Notice("Le dossier à remapper n'est pas configuré.");
+      return;
+    }
+
+    const vaultBasePath = this.getVaultBasePath();
+    if (!vaultBasePath) {
+      new Notice("Impossible de déterminer le chemin local du vault.");
+      return;
+    }
+
+    const publishDirectory = path.join(vaultBasePath, normalizePath(publishFolder));
+
+    try {
+      await ensureExistingDirectory(publishDirectory);
+
+      const conversionSummary = await convertMarkdownLinksToObsidianInDirectory(
+        publishDirectory,
+        {
+          writeChanges: true,
+          missingLinkFallbackPath:
+            this.settings.missingLinkFallbackPath.trim()
+            || DEFAULT_SETTINGS.missingLinkFallbackPath,
+        },
+      );
+
+      if (conversionSummary.changedFiles === 0) {
+        new Notice("Aucun lien Markdown à remapper vers Obsidian.");
+        return;
+      }
+
+      new Notice(
+        `Remap Obsidian terminé. ${conversionSummary.changedFiles} fichier(s) mis à jour.`,
+      );
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : "Impossible de remapper le dossier vers Obsidian.";
       new Notice(message, 10000);
     }
   }

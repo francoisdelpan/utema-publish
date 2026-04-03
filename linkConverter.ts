@@ -78,6 +78,48 @@ export async function convertWikiLinksInDirectory(
   };
 }
 
+export async function convertMarkdownLinksToObsidianInDirectory(
+  directoryPath: string,
+  options: LinkConversionOptions = { writeChanges: true, missingLinkFallbackPath: "404.md" },
+): Promise<LinkConversionSummary> {
+  const markdownFiles = await collectMarkdownFiles(directoryPath);
+  const allFiles = await collectFiles(directoryPath);
+  const context: ConversionContext = {
+    rootDirectory: directoryPath,
+    markdownFiles,
+    allFiles,
+    markdownResolver: createLinkResolver(directoryPath, markdownFiles),
+    fileResolver: createLinkResolver(directoryPath, allFiles),
+    missingLinkFallbackPath: normalizeFallbackPath(options.missingLinkFallbackPath),
+  };
+  const changedRelativePaths: string[] = [];
+
+  for (const filePath of markdownFiles) {
+    const originalContent = await fs.readFile(filePath, "utf8");
+    const convertedContent = convertMarkdownLinksToObsidian(
+      originalContent,
+      filePath,
+      context,
+    );
+
+    if (convertedContent === originalContent) {
+      continue;
+    }
+
+    if (options.writeChanges) {
+      await writeFileAtomically(filePath, convertedContent);
+    }
+
+    changedRelativePaths.push(path.relative(directoryPath, filePath));
+  }
+
+  return {
+    scannedFiles: markdownFiles.length,
+    changedFiles: changedRelativePaths.length,
+    changedRelativePaths,
+  };
+}
+
 export async function collectMarkdownFiles(
   directoryPath: string,
 ): Promise<string[]> {
@@ -176,6 +218,39 @@ export function convertWikiLinks(
   });
 
   return convertCalloutsToGitHubAlerts(convertedLinks);
+}
+
+export function convertMarkdownLinksToObsidian(
+  content: string,
+  currentFilePath: string,
+  context: ConversionContext,
+): string {
+  return content.replace(
+    /(!)?\[([^\]]+?)\]\(([^)\s]+(?:\s+=[^)]+)?)\)/g,
+    (match, embedPrefix, label, rawHref) => {
+      if (embedPrefix === "!") {
+        return match;
+      }
+
+      const href = stripMarkdownLinkSize(rawHref.trim());
+      if (!isLikelyInternalMarkdownLink(href)) {
+        return match;
+      }
+
+      const wikiLinkTarget = buildWikiLinkTargetFromMarkdownHref(
+        label,
+        href,
+        currentFilePath,
+        context,
+      );
+
+      if (!wikiLinkTarget) {
+        return match;
+      }
+
+      return `[[${wikiLinkTarget}]]`;
+    },
+  );
 }
 
 export function parseWikiLink(rawValue: string): ParsedWikiLink | null {
@@ -396,6 +471,14 @@ function normalizeFallbackPath(value?: string): string {
   return normalized.toLowerCase().endsWith(".md") ? normalized : `${normalized}.md`;
 }
 
+function stripMarkdownLinkSize(value: string): string {
+  return value.replace(/\s+=.*$/, "");
+}
+
+function isLikelyInternalMarkdownLink(href: string): boolean {
+  return !/^(?:[a-z]+:)?\/\//i.test(href) && !href.startsWith("mailto:");
+}
+
 function toPosixPath(value: string): string {
   return value.replace(/\\/g, "/");
 }
@@ -523,6 +606,72 @@ function encodeVaultPath(target: string): string {
     .split("/")
     .map((segment) => encodeURIComponent(segment))
     .join("/");
+}
+
+function buildWikiLinkTargetFromMarkdownHref(
+  label: string,
+  href: string,
+  currentFilePath: string,
+  context: ConversionContext,
+): string | null {
+  const decodedHref = decodeMarkdownHref(href);
+  const [pathPart, fragmentPart] = decodedHref.split("#", 2);
+  const normalizedPathPart = normalizeLinkTarget(pathPart);
+  const fallbackPath = context.missingLinkFallbackPath.toLowerCase();
+
+  if (normalizedPathPart.toLowerCase() === fallbackPath) {
+    return label.trim() || null;
+  }
+
+  const absoluteTargetPath = path.resolve(path.dirname(currentFilePath), normalizedPathPart);
+  const relativeToRoot = toPosixPath(path.relative(context.rootDirectory, absoluteTargetPath));
+  const rootRelativePath = stripMarkdownExtension(relativeToRoot);
+
+  if (relativeToRoot.startsWith("..")) {
+    return label.trim() || null;
+  }
+
+  if (!context.markdownResolver.resolve(relativeToRoot)) {
+    return label.trim() || null;
+  }
+
+  const fragment = fragmentPart ? decodeURIComponent(fragmentPart) : "";
+  const fragmentSuffix = buildObsidianFragmentSuffix(fragment);
+  const aliasNeeded = label.trim() && label.trim() !== buildDefaultMarkdownLabel(rootRelativePath, fragment);
+
+  if (aliasNeeded) {
+    return `${rootRelativePath}${fragmentSuffix}|${label.trim()}`;
+  }
+
+  return `${rootRelativePath}${fragmentSuffix}`;
+}
+
+function decodeMarkdownHref(href: string): string {
+  const [pathPart, fragmentPart] = href.split("#", 2);
+  const decodedPath = pathPart
+    .split("/")
+    .map((segment) => decodeURIComponent(segment))
+    .join("/");
+  return fragmentPart
+    ? `${decodedPath}#${decodeURIComponent(fragmentPart)}`
+    : decodedPath;
+}
+
+function buildObsidianFragmentSuffix(fragment: string): string {
+  if (!fragment) {
+    return "";
+  }
+
+  if (fragment.startsWith("^")) {
+    return fragment;
+  }
+
+  return `#${fragment}`;
+}
+
+function buildDefaultMarkdownLabel(target: string, fragment: string): string {
+  const base = target;
+  return fragment ? `${base}#${fragment}` : base;
 }
 
 async function writeFileAtomically(

@@ -57,6 +57,8 @@ Mappings déjà implémentés :
 - `![[image.png|640x480]]` -> `![image.png](image.png =640x480)`
 - callouts Obsidian de type `note`, `tip`, `important`, `warning`, `caution` -> alertes GitHub
 - callouts `quote` et `cite` -> blockquotes Markdown classiques
+- remap inverse des liens Markdown internes -> wikilinks Obsidian
+- remap inverse des liens vers `404.md` -> `[[Label du lien]]` quand possible
 
 Mappings de callouts actuellement prévus :
 
@@ -174,6 +176,14 @@ UTEMA Move Active File To Auto Folder
 ```
 
 Cette commande prend le fichier actuellement ouvert, ouvre une mini-modale listant tous les sous-dossiers du dossier racine configuré, puis déplace le fichier dans le dossier sélectionné. Si un fichier du même nom existe déjà, le plugin ajoute un suffixe numérique au nom.
+
+Commande supplémentaire :
+
+```text
+UTEMA Remap Folder To Obsidian Links
+```
+
+Cette commande reconvertit les liens Markdown internes du dossier publié vers des wikilinks Obsidian pour retravailler plus confortablement dans le vault. Pour l'instant, elle cible surtout les liens et pas les callouts/quotes dans l'autre sens.
 
 Workflow :
 

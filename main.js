@@ -351,6 +351,39 @@ async function convertWikiLinksInDirectory(directoryPath, options = { writeChang
     changedRelativePaths
   };
 }
+async function convertMarkdownLinksToObsidianInDirectory(directoryPath, options = { writeChanges: true, missingLinkFallbackPath: "404.md" }) {
+  const markdownFiles = await collectMarkdownFiles(directoryPath);
+  const allFiles = await collectFiles(directoryPath);
+  const context = {
+    rootDirectory: directoryPath,
+    markdownFiles,
+    allFiles,
+    markdownResolver: createLinkResolver(directoryPath, markdownFiles),
+    fileResolver: createLinkResolver(directoryPath, allFiles),
+    missingLinkFallbackPath: normalizeFallbackPath(options.missingLinkFallbackPath)
+  };
+  const changedRelativePaths = [];
+  for (const filePath of markdownFiles) {
+    const originalContent = await import_node_fs2.promises.readFile(filePath, "utf8");
+    const convertedContent = convertMarkdownLinksToObsidian(
+      originalContent,
+      filePath,
+      context
+    );
+    if (convertedContent === originalContent) {
+      continue;
+    }
+    if (options.writeChanges) {
+      await writeFileAtomically(filePath, convertedContent);
+    }
+    changedRelativePaths.push(path.relative(directoryPath, filePath));
+  }
+  return {
+    scannedFiles: markdownFiles.length,
+    changedFiles: changedRelativePaths.length,
+    changedRelativePaths
+  };
+}
 async function collectMarkdownFiles(directoryPath) {
   const files = [];
   const entries = await import_node_fs2.promises.readdir(directoryPath, { withFileTypes: true });
@@ -418,6 +451,30 @@ function convertWikiLinks(content, currentFilePath, context) {
     return `[${label}](${href})`;
   });
   return convertCalloutsToGitHubAlerts(convertedLinks);
+}
+function convertMarkdownLinksToObsidian(content, currentFilePath, context) {
+  return content.replace(
+    /(!)?\[([^\]]+?)\]\(([^)\s]+(?:\s+=[^)]+)?)\)/g,
+    (match, embedPrefix, label, rawHref) => {
+      if (embedPrefix === "!") {
+        return match;
+      }
+      const href = stripMarkdownLinkSize(rawHref.trim());
+      if (!isLikelyInternalMarkdownLink(href)) {
+        return match;
+      }
+      const wikiLinkTarget = buildWikiLinkTargetFromMarkdownHref(
+        label,
+        href,
+        currentFilePath,
+        context
+      );
+      if (!wikiLinkTarget) {
+        return match;
+      }
+      return `[[${wikiLinkTarget}]]`;
+    }
+  );
 }
 function parseWikiLink(rawValue) {
   const trimmed = rawValue.trim();
@@ -573,6 +630,12 @@ function normalizeFallbackPath(value) {
   }
   return normalized.toLowerCase().endsWith(".md") ? normalized : `${normalized}.md`;
 }
+function stripMarkdownLinkSize(value) {
+  return value.replace(/\s+=.*$/, "");
+}
+function isLikelyInternalMarkdownLink(href) {
+  return !/^(?:[a-z]+:)?\/\//i.test(href) && !href.startsWith("mailto:");
+}
 function toPosixPath(value) {
   return value.replace(/\\/g, "/");
 }
@@ -669,6 +732,49 @@ function mapObsidianCalloutToGitHubAlert(type) {
 }
 function encodeVaultPath(target) {
   return target.split("/").map((segment) => encodeURIComponent(segment)).join("/");
+}
+function buildWikiLinkTargetFromMarkdownHref(label, href, currentFilePath, context) {
+  const decodedHref = decodeMarkdownHref(href);
+  const [pathPart, fragmentPart] = decodedHref.split("#", 2);
+  const normalizedPathPart = normalizeLinkTarget(pathPart);
+  const fallbackPath = context.missingLinkFallbackPath.toLowerCase();
+  if (normalizedPathPart.toLowerCase() === fallbackPath) {
+    return label.trim() || null;
+  }
+  const absoluteTargetPath = path.resolve(path.dirname(currentFilePath), normalizedPathPart);
+  const relativeToRoot = toPosixPath(path.relative(context.rootDirectory, absoluteTargetPath));
+  const rootRelativePath = stripMarkdownExtension(relativeToRoot);
+  if (relativeToRoot.startsWith("..")) {
+    return label.trim() || null;
+  }
+  if (!context.markdownResolver.resolve(relativeToRoot)) {
+    return label.trim() || null;
+  }
+  const fragment = fragmentPart ? decodeURIComponent(fragmentPart) : "";
+  const fragmentSuffix = buildObsidianFragmentSuffix(fragment);
+  const aliasNeeded = label.trim() && label.trim() !== buildDefaultMarkdownLabel(rootRelativePath, fragment);
+  if (aliasNeeded) {
+    return `${rootRelativePath}${fragmentSuffix}|${label.trim()}`;
+  }
+  return `${rootRelativePath}${fragmentSuffix}`;
+}
+function decodeMarkdownHref(href) {
+  const [pathPart, fragmentPart] = href.split("#", 2);
+  const decodedPath = pathPart.split("/").map((segment) => decodeURIComponent(segment)).join("/");
+  return fragmentPart ? `${decodedPath}#${decodeURIComponent(fragmentPart)}` : decodedPath;
+}
+function buildObsidianFragmentSuffix(fragment) {
+  if (!fragment) {
+    return "";
+  }
+  if (fragment.startsWith("^")) {
+    return fragment;
+  }
+  return `#${fragment}`;
+}
+function buildDefaultMarkdownLabel(target, fragment) {
+  const base = target;
+  return fragment ? `${base}#${fragment}` : base;
 }
 async function writeFileAtomically(filePath, content) {
   const tempPath = `${filePath}${TEMP_FILE_SUFFIX}`;
@@ -786,6 +892,13 @@ var UtemaPublishPlugin = class extends import_obsidian3.Plugin {
         void this.moveActiveFileToAutoFolder();
       }
     });
+    this.addCommand({
+      id: "utema-remap-folder-to-obsidian-links",
+      name: "UTEMA Remap Folder To Obsidian Links",
+      callback: () => {
+        void this.remapFolderToObsidianLinks();
+      }
+    });
     this.addSettingTab(new UtemaPublishSettingTab(this.app, this));
   }
   async loadSettings() {
@@ -894,6 +1007,39 @@ var UtemaPublishPlugin = class extends import_obsidian3.Plugin {
     } catch (error) {
       const message = this.formatErrorMessage(error);
       console.error("[UTEMA Sync] Sync failed", error);
+      new import_obsidian3.Notice(message, 1e4);
+    }
+  }
+  async remapFolderToObsidianLinks() {
+    const publishFolder = this.settings.publishFolder.trim();
+    if (!publishFolder) {
+      new import_obsidian3.Notice("Le dossier \xE0 remapper n'est pas configur\xE9.");
+      return;
+    }
+    const vaultBasePath = this.getVaultBasePath();
+    if (!vaultBasePath) {
+      new import_obsidian3.Notice("Impossible de d\xE9terminer le chemin local du vault.");
+      return;
+    }
+    const publishDirectory = path2.join(vaultBasePath, (0, import_obsidian3.normalizePath)(publishFolder));
+    try {
+      await ensureExistingDirectory(publishDirectory);
+      const conversionSummary = await convertMarkdownLinksToObsidianInDirectory(
+        publishDirectory,
+        {
+          writeChanges: true,
+          missingLinkFallbackPath: this.settings.missingLinkFallbackPath.trim() || DEFAULT_SETTINGS.missingLinkFallbackPath
+        }
+      );
+      if (conversionSummary.changedFiles === 0) {
+        new import_obsidian3.Notice("Aucun lien Markdown \xE0 remapper vers Obsidian.");
+        return;
+      }
+      new import_obsidian3.Notice(
+        `Remap Obsidian termin\xE9. ${conversionSummary.changedFiles} fichier(s) mis \xE0 jour.`
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Impossible de remapper le dossier vers Obsidian.";
       new import_obsidian3.Notice(message, 1e4);
     }
   }
