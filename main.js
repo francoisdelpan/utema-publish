@@ -227,9 +227,7 @@ async function ensureRemoteConfigured(remoteName, repoUrl, executionOptions) {
     return;
   }
   if (currentRemoteUrl !== repoUrl) {
-    throw new Error(
-      `Le remote ${remoteName} pointe vers ${currentRemoteUrl}, mais la configuration demande ${repoUrl}.`
-    );
+    await runGitCommand(["remote", "set-url", remoteName, repoUrl], executionOptions);
   }
 }
 async function getRemoteUrl(remoteName, executionOptions) {
@@ -829,8 +827,8 @@ var UtemaPublishSettingTab = class extends import_obsidian2.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Repository URL").setDesc("URL Git attendue pour le remote. Exemple : git@github.com:org/repo.git").addText(
-      (text) => text.setPlaceholder("git@github.com:org/repo.git").setValue(this.plugin.settings.repoUrl).onChange(async (value) => {
+    new import_obsidian2.Setting(containerEl).setName("Repository URL").setDesc("URL Git attendue pour le remote. Si le remote existe deja, son URL sera mise a jour automatiquement.").addText(
+      (text) => text.setPlaceholder("git@forge.example.com:org/repo.git").setValue(this.plugin.settings.repoUrl).onChange(async (value) => {
         this.plugin.settings.repoUrl = value.trim();
         await this.plugin.saveSettings();
       })

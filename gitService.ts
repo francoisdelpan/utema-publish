@@ -183,9 +183,7 @@ async function ensureRemoteConfigured(
   }
 
   if (currentRemoteUrl !== repoUrl) {
-    throw new Error(
-      `Le remote ${remoteName} pointe vers ${currentRemoteUrl}, mais la configuration demande ${repoUrl}.`,
-    );
+    await runGitCommand(["remote", "set-url", remoteName, repoUrl], executionOptions);
   }
 }
 

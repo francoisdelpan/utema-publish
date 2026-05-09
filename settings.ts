@@ -97,10 +97,10 @@ export class UtemaPublishSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Repository URL")
-      .setDesc("URL Git attendue pour le remote. Exemple : git@github.com:org/repo.git")
+      .setDesc("URL Git attendue pour le remote. Si le remote existe deja, son URL sera mise a jour automatiquement.")
       .addText((text) =>
         text
-          .setPlaceholder("git@github.com:org/repo.git")
+          .setPlaceholder("git@forge.example.com:org/repo.git")
           .setValue(this.plugin.settings.repoUrl)
           .onChange(async (value) => {
             this.plugin.settings.repoUrl = value.trim();
