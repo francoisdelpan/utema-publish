@@ -3,3 +3,24 @@
   padding-left: 0;
   padding-right: 0;
 }
+
+.utema-publish-settings-section {
+  margin-top: 1.5rem;
+}
+
+.utema-publish-settings-accordion {
+  border-top: 1px solid var(--background-modifier-border);
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+}
+
+.utema-publish-settings-accordion-summary {
+  cursor: pointer;
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+  padding: 0.25rem 0;
+}
+
+.utema-publish-settings-accordion-content {
+  padding-top: 0.5rem;
+}

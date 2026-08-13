@@ -8,13 +8,16 @@ Plugin Obsidian desktop-only pour synchroniser un dossier du vault avec un dép�
 2. convertit les wikilinks `[[...]]` en liens Markdown standards ;
 3. résout si possible la vraie cible Markdown dans le dossier synchronisé ;
 4. convertit aussi les embeds de fichiers non-Markdown `![[image.png]]` vers `![](relative/path.png)` ;
-5. exécute un workflow Git local simple :
+5. met à jour la propriété frontmatter `wiki-path` avec le chemin réel relatif à la racine synchronisée ;
+6. exécute un workflow Git local simple, vers Gitea, GitHub ou les deux :
    - `git add .`
    - `git commit -m "..."`
-   - `git pull --rebase <remote> <branch>`
-   - `git push` ou `git push <remote> <branch>`
+   - pour chaque repo sélectionné :
+     - `git pull --rebase <remote> <branch>` si la branche distante existe
+     - `git push -u <remote> <branch>` si la branche distante n'existe pas encore
+     - `git push` ou `git push <remote> <branch>` selon le mode configuré
 
-Le plugin est local-first : pas d'API GitHub, pas de token stocké, pas de logique Git réimplémentée.
+Le plugin est local-first : pas d'API Gitea/GitHub, pas de token stocké, pas de logique Git réimplémentée.
 
 ## Résolution des liens
 
@@ -109,15 +112,13 @@ Dans les settings du plugin :
    - dossier racine utilisé par la commande de déplacement rapide du fichier actif
    - exemple : `Inbox/Reviewed`
 3. `Remote name`
-   - défaut : `origin`
+   - déplacé dans le bloc `Repo Gitea`
 4. `Branch name`
-   - défaut : `main`
+   - déplacé dans le bloc `Repo Gitea`
 5. `Repository URL`
-   - URL Git attendue pour le remote
-   - exemple : `git@github.com:org/repo.git`
+   - déplacé dans le bloc `Repo Gitea`
 6. `SSH key path`
-   - chemin local vers la clé SSH privée
-   - exemple : `/Users/vous/.ssh/id_ed25519`
+   - déplacé dans le bloc `Repo Gitea`
 7. `Missing link fallback`
    - page Markdown de repli pour les liens vers des notes hors dossier publié
    - exemple : `404.md`
@@ -128,6 +129,25 @@ Dans les settings du plugin :
    - `Simple` : `git push`
 10. `Dry run`
    - simule la conversion et la sync Git sans écrire les fichiers ni lancer Git
+
+Réglages multi-repos :
+
+1. `Sync target`
+   - `Repo Gitea` : synchronise uniquement le repo Gitea
+   - `Repo GitHub` : synchronise uniquement le repo GitHub
+   - `Les deux` : synchronise Gitea puis GitHub
+2. `Repo Gitea`
+   - `remote name` : défaut `origin`
+   - `branch name` : défaut `main`
+   - `repository URL` : URL Git attendue pour le remote Gitea
+   - `SSH key path` : clé SSH privée optionnelle
+3. `Repo GitHub`
+   - `remote name` : défaut `github`
+   - `branch name` : défaut `main`
+   - `repository URL` : défaut `git@github.com:francoisdelpan/univers-utema.git`
+   - `SSH key path` : clé SSH privée optionnelle
+
+Si `Les deux` est sélectionné, le commit local est créé une seule fois. Chaque repo est ensuite synchronisé indépendamment : si un push échoue, le plugin continue avec l'autre repo et affiche un rapport partiel.
 
 ## Fallback 404
 
@@ -154,8 +174,19 @@ Copier ce fichier en `utema-sync.config.json` pour garder vos valeurs locales ho
 ```json
 {
   "obsidianVaultPath": "/Users/vous/Documents/MonVaultObsidian",
-  "gitRepoUrl": "git@github.com:votre-compte/votre-repo.git",
-  "gitSshKeyPath": "/Users/vous/.ssh/id_ed25519"
+  "syncTarget": "both",
+  "gitea": {
+    "remoteName": "origin",
+    "branchName": "main",
+    "repoUrl": "git@forge.example.com:org/repo.git",
+    "sshKeyPath": "/Users/vous/.ssh/id_ed25519"
+  },
+  "github": {
+    "remoteName": "github",
+    "branchName": "main",
+    "repoUrl": "git@github.com:francoisdelpan/univers-utema.git",
+    "sshKeyPath": "/Users/vous/.ssh/id_ed25519"
+  }
 }
 ```
 
@@ -191,7 +222,9 @@ Workflow :
 2. vérifier que le dossier configuré existe ;
 3. vérifier qu'il s'agit bien d'un dépôt Git ;
 4. convertir les wikilinks des fichiers `.md` ;
-5. lancer `git add`, `git commit`, `git pull --rebase`, puis `git push`.
+5. remplacer ou ajouter `wiki-path` dans le frontmatter YAML existant avec le chemin relatif sans `.md` ;
+6. lancer `git add` et `git commit` une seule fois ;
+7. synchroniser les repos sélectionnés selon `Sync target`.
 
 ## Développement local
 
@@ -199,6 +232,7 @@ Workflow :
 npm install
 npm run build
 npm run dev
+npm run deploy:obsidian
 ```
 
 Pour l'installation locale dans Obsidian, copier le dossier compilé dans :
@@ -206,6 +240,8 @@ Pour l'installation locale dans Obsidian, copier le dossier compilé dans :
 ```text
 <vault>/.obsidian/plugins/utema-publish/
 ```
+
+Avec `.env.local`, `npm run deploy:obsidian` copie automatiquement les fichiers build vers `UTEMA_OBSIDIAN_PLUGIN_DIR`.
 
 Fichiers attendus :
 

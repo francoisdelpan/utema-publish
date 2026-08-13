@@ -2,32 +2,124 @@ import { App, PluginSettingTab, Setting } from "obsidian";
 import type UtemaPublishPlugin from "./main";
 
 export type PushMode = "explicit" | "simple";
+export type SyncTarget = "gitea" | "github" | "both";
 
-export interface UtemaPublishSettings {
-  publishFolder: string;
-  autoMoveFolder: string;
+export type RepositoryKey = "gitea" | "github";
+
+export interface GitRepositorySettings {
   remoteName: string;
   branchName: string;
   repoUrl: string;
   sshKeyPath: string;
+}
+
+export interface UtemaPublishSettings {
+  publishFolder: string;
+  autoMoveFolder: string;
+  syncTarget: SyncTarget;
+  repositories: Record<RepositoryKey, GitRepositorySettings>;
   missingLinkFallbackPath: string;
   convertWikiLinksBeforePublish: boolean;
   pushMode: PushMode;
   dryRun: boolean;
 }
 
+export const DEFAULT_GITHUB_REPO_URL = "git@github.com:francoisdelpan/univers-utema.git";
+
 export const DEFAULT_SETTINGS: UtemaPublishSettings = {
   publishFolder: "Publish",
   autoMoveFolder: "",
-  remoteName: "origin",
-  branchName: "main",
-  repoUrl: "",
-  sshKeyPath: "",
+  syncTarget: "gitea",
+  repositories: {
+    gitea: {
+      remoteName: "origin",
+      branchName: "main",
+      repoUrl: "",
+      sshKeyPath: "",
+    },
+    github: {
+      remoteName: "github",
+      branchName: "main",
+      repoUrl: DEFAULT_GITHUB_REPO_URL,
+      sshKeyPath: "",
+    },
+  },
   missingLinkFallbackPath: "404.md",
   convertWikiLinksBeforePublish: true,
   pushMode: "explicit",
   dryRun: false,
 };
+
+interface LegacyUtemaPublishSettings extends Partial<UtemaPublishSettings> {
+  remoteName?: string;
+  branchName?: string;
+  repoUrl?: string;
+  sshKeyPath?: string;
+}
+
+export function normalizeSettings(
+  loaded: LegacyUtemaPublishSettings | null | undefined,
+): UtemaPublishSettings {
+  const legacy = loaded ?? {};
+  const giteaSettings = {
+    ...DEFAULT_SETTINGS.repositories.gitea,
+    ...(legacy.repositories?.gitea ?? {}),
+  };
+  const githubSettings = {
+    ...DEFAULT_SETTINGS.repositories.github,
+    ...(legacy.repositories?.github ?? {}),
+  };
+
+  if (typeof legacy.remoteName === "string") {
+    giteaSettings.remoteName = legacy.remoteName;
+  }
+  if (typeof legacy.branchName === "string") {
+    giteaSettings.branchName = legacy.branchName;
+  }
+  if (typeof legacy.repoUrl === "string") {
+    giteaSettings.repoUrl = legacy.repoUrl;
+  }
+  if (typeof legacy.sshKeyPath === "string") {
+    giteaSettings.sshKeyPath = legacy.sshKeyPath;
+  }
+
+  return {
+    publishFolder: typeof legacy.publishFolder === "string"
+      ? legacy.publishFolder
+      : DEFAULT_SETTINGS.publishFolder,
+    autoMoveFolder: typeof legacy.autoMoveFolder === "string"
+      ? legacy.autoMoveFolder
+      : DEFAULT_SETTINGS.autoMoveFolder,
+    syncTarget: isSyncTarget(legacy.syncTarget)
+      ? legacy.syncTarget
+      : DEFAULT_SETTINGS.syncTarget,
+    repositories: {
+      gitea: giteaSettings,
+      github: githubSettings,
+    },
+    missingLinkFallbackPath: typeof legacy.missingLinkFallbackPath === "string"
+      ? legacy.missingLinkFallbackPath
+      : DEFAULT_SETTINGS.missingLinkFallbackPath,
+    convertWikiLinksBeforePublish:
+      typeof legacy.convertWikiLinksBeforePublish === "boolean"
+        ? legacy.convertWikiLinksBeforePublish
+        : DEFAULT_SETTINGS.convertWikiLinksBeforePublish,
+    pushMode: isPushMode(legacy.pushMode)
+      ? legacy.pushMode
+      : DEFAULT_SETTINGS.pushMode,
+    dryRun: typeof legacy.dryRun === "boolean"
+      ? legacy.dryRun
+      : DEFAULT_SETTINGS.dryRun,
+  };
+}
+
+function isSyncTarget(value: unknown): value is SyncTarget {
+  return value === "gitea" || value === "github" || value === "both";
+}
+
+function isPushMode(value: unknown): value is PushMode {
+  return value === "explicit" || value === "simple";
+}
 
 export class UtemaPublishSettingTab extends PluginSettingTab {
   private readonly plugin: UtemaPublishPlugin;
@@ -70,58 +162,30 @@ export class UtemaPublishSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Remote name")
-      .setDesc("Nom du remote Git utilisé en mode de push explicite.")
-      .addText((text) =>
-        text
-          .setPlaceholder("origin")
-          .setValue(this.plugin.settings.remoteName)
-          .onChange(async (value) => {
-            this.plugin.settings.remoteName = value.trim();
+      .setName("Sync target")
+      .setDesc("Destination Git à synchroniser.")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("gitea", "Repo Gitea")
+          .addOption("github", "Repo GitHub")
+          .addOption("both", "Les deux")
+          .setValue(this.plugin.settings.syncTarget)
+          .onChange(async (value: SyncTarget) => {
+            this.plugin.settings.syncTarget = value;
             await this.plugin.saveSettings();
           }),
       );
 
-    new Setting(containerEl)
-      .setName("Branch name")
-      .setDesc("Nom de la branche cible en mode de push explicite.")
-      .addText((text) =>
-        text
-          .setPlaceholder("main")
-          .setValue(this.plugin.settings.branchName)
-          .onChange(async (value) => {
-            this.plugin.settings.branchName = value.trim();
-            await this.plugin.saveSettings();
-          }),
-      );
+    this.displayRepositorySettings("Repo Gitea", "gitea");
+    this.displayRepositorySettings("Repo GitHub", "github");
 
-    new Setting(containerEl)
-      .setName("Repository URL")
-      .setDesc("URL Git attendue pour le remote. Si le remote existe deja, son URL sera mise a jour automatiquement.")
-      .addText((text) =>
-        text
-          .setPlaceholder("git@forge.example.com:org/repo.git")
-          .setValue(this.plugin.settings.repoUrl)
-          .onChange(async (value) => {
-            this.plugin.settings.repoUrl = value.trim();
-            await this.plugin.saveSettings();
-          }),
-      );
+    this.displayGeneralSettings();
+  }
 
-    new Setting(containerEl)
-      .setName("SSH key path")
-      .setDesc("Chemin local vers la clé SSH privée à utiliser pour Git. Optionnel.")
-      .addText((text) =>
-        text
-          .setPlaceholder("/Users/vous/.ssh/id_ed25519")
-          .setValue(this.plugin.settings.sshKeyPath)
-          .onChange(async (value) => {
-            this.plugin.settings.sshKeyPath = value.trim();
-            await this.plugin.saveSettings();
-          }),
-      );
+  private displayGeneralSettings(): void {
+    const generalSection = this.createSettingsSection("Paramétrage général");
 
-    new Setting(containerEl)
+    new Setting(generalSection)
       .setName("Missing link fallback")
       .setDesc("Chemin Markdown à utiliser si une note ciblée n'existe pas dans le dossier synchronisé.")
       .addText((text) =>
@@ -134,7 +198,7 @@ export class UtemaPublishSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl)
+    new Setting(generalSection)
       .setName("Convert wiki links before sync")
       .setDesc("Résout les liens [[...]] en vrais liens Markdown `.md` avant Git.")
       .addToggle((toggle) =>
@@ -146,7 +210,7 @@ export class UtemaPublishSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl)
+    new Setting(generalSection)
       .setName("Push mode")
       .setDesc("Simple = git push. Explicite = git push <remote> <branch>.")
       .addDropdown((dropdown) =>
@@ -160,7 +224,7 @@ export class UtemaPublishSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl)
+    new Setting(generalSection)
       .setName("Dry run")
       .setDesc("Prépare la sync sans modifier Git ni écrire les conversions.")
       .addToggle((toggle) =>
@@ -169,5 +233,83 @@ export class UtemaPublishSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }),
       );
+  }
+
+  private displayRepositorySettings(title: string, repositoryKey: RepositoryKey): void {
+    const repositorySection = this.createAccordionSection(title);
+    const repositorySettings = this.plugin.settings.repositories[repositoryKey];
+
+    new Setting(repositorySection)
+      .setName(`${title} remote name`)
+      .setDesc("Nom du remote Git utilisé en mode de push explicite.")
+      .addText((text) =>
+        text
+          .setPlaceholder(repositoryKey === "github" ? "github" : "origin")
+          .setValue(repositorySettings.remoteName)
+          .onChange(async (value) => {
+            repositorySettings.remoteName = value.trim();
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(repositorySection)
+      .setName(`${title} branch name`)
+      .setDesc("Nom de la branche cible en mode de push explicite.")
+      .addText((text) =>
+        text
+          .setPlaceholder("main")
+          .setValue(repositorySettings.branchName)
+          .onChange(async (value) => {
+            repositorySettings.branchName = value.trim();
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(repositorySection)
+      .setName(`${title} repository URL`)
+      .setDesc("URL Git attendue pour le remote. Si le remote existe deja, son URL sera mise a jour automatiquement.")
+      .addText((text) =>
+        text
+          .setPlaceholder(
+            repositoryKey === "github"
+              ? DEFAULT_GITHUB_REPO_URL
+              : "git@forge.example.com:org/repo.git",
+          )
+          .setValue(repositorySettings.repoUrl)
+          .onChange(async (value) => {
+            repositorySettings.repoUrl = value.trim();
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(repositorySection)
+      .setName(`${title} SSH key path`)
+      .setDesc("Chemin local vers la clé SSH privée à utiliser pour Git. Optionnel.")
+      .addText((text) =>
+        text
+          .setPlaceholder("/Users/vous/.ssh/id_ed25519")
+          .setValue(repositorySettings.sshKeyPath)
+          .onChange(async (value) => {
+            repositorySettings.sshKeyPath = value.trim();
+            await this.plugin.saveSettings();
+          }),
+      );
+  }
+
+  private createSettingsSection(title: string): HTMLElement {
+    const section = this.containerEl.createDiv({ cls: "utema-publish-settings-section" });
+    section.createEl("h3", { text: title });
+    return section;
+  }
+
+  private createAccordionSection(title: string): HTMLElement {
+    const details = this.containerEl.createEl("details", {
+      cls: "utema-publish-settings-accordion",
+    });
+    details.createEl("summary", {
+      text: title,
+      cls: "utema-publish-settings-accordion-summary",
+    });
+    return details.createDiv({ cls: "utema-publish-settings-accordion-content" });
   }
 }

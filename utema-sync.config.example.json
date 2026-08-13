@@ -1,5 +1,16 @@
 {
   "obsidianVaultPath": "/Users/vous/Documents/MonVaultObsidian",
-  "gitRepoUrl": "git@github.com:votre-compte/votre-repo.git",
-  "gitSshKeyPath": "/Users/vous/.ssh/id_ed25519"
+  "syncTarget": "both",
+  "gitea": {
+    "remoteName": "origin",
+    "branchName": "main",
+    "repoUrl": "git@forge.example.com:org/repo.git",
+    "sshKeyPath": "/Users/vous/.ssh/id_ed25519"
+  },
+  "github": {
+    "remoteName": "github",
+    "branchName": "main",
+    "repoUrl": "git@github.com:francoisdelpan/univers-utema.git",
+    "sshKeyPath": "/Users/vous/.ssh/id_ed25519"
+  }
 }

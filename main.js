@@ -56,8 +56,8 @@ __export(main_exports, {
   default: () => UtemaPublishPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var path2 = __toESM(require("node:path"));
-var import_node_fs3 = require("node:fs");
+var path3 = __toESM(require("node:path"));
+var import_node_fs4 = require("node:fs");
 var import_obsidian3 = require("obsidian");
 
 // commitModal.ts
@@ -142,6 +142,46 @@ async function ensureGitRepository(workingDirectory) {
 async function publishWithGit(options) {
   const commands = [];
   const executionOptions = {
+    workingDirectory: options.workingDirectory
+  };
+  const statusBefore = await getStatusSummary(executionOptions);
+  const hasLocalChanges = Boolean(statusBefore);
+  if (!hasLocalChanges) {
+    return {
+      dryRun: options.dryRun,
+      hadChanges: false,
+      committedLocalChanges: false,
+      commands
+    };
+  }
+  commands.push("git add .");
+  commands.push(`git commit -m "${options.commitMessage}"`);
+  if (options.dryRun) {
+    return {
+      dryRun: true,
+      hadChanges: true,
+      committedLocalChanges: false,
+      commands
+    };
+  }
+  await runGitCommand(["add", "."], executionOptions);
+  try {
+    await runGitCommand(["commit", "-m", options.commitMessage], executionOptions);
+  } catch (error) {
+    if (!isNothingToCommitError(error)) {
+      throw error;
+    }
+  }
+  return {
+    dryRun: false,
+    hadChanges: true,
+    committedLocalChanges: true,
+    commands
+  };
+}
+async function syncGitRemote(options) {
+  const commands = [];
+  const executionOptions = {
     workingDirectory: options.workingDirectory,
     sshKeyPath: normalizeOptionalValue(options.sshKeyPath)
   };
@@ -154,59 +194,68 @@ async function publishWithGit(options) {
   } else if (normalizedRepoUrl) {
     commands.push(`# remote attendu: ${options.remoteName} -> ${normalizedRepoUrl}`);
   }
-  const statusBefore = await getStatusSummary(executionOptions);
-  const pullCommand = buildPullCommandLabel(options.remoteName, options.branchName);
-  let pulledRemoteChanges = false;
-  if (!statusBefore) {
-    commands.push(pullCommand);
-    if (!options.dryRun) {
-      pulledRemoteChanges = await pullLatestChanges(
-        options.remoteName,
-        options.branchName,
-        executionOptions
-      );
-    }
-    return {
-      dryRun: options.dryRun,
-      hadChanges: pulledRemoteChanges,
-      pulledRemoteChanges,
-      pushedLocalChanges: false,
-      commands
-    };
-  }
-  commands.push("git add .");
-  commands.push(`git commit -m "${options.commitMessage}"`);
-  commands.push(pullCommand);
-  commands.push(buildPushCommandLabel(options.pushMode, options.remoteName, options.branchName));
-  if (options.dryRun) {
-    return {
-      dryRun: true,
-      hadChanges: true,
-      pulledRemoteChanges: false,
-      pushedLocalChanges: true,
-      commands
-    };
-  }
-  await runGitCommand(["add", "."], executionOptions);
-  try {
-    await runGitCommand(["commit", "-m", options.commitMessage], executionOptions);
-  } catch (error) {
-    if (!isNothingToCommitError(error)) {
-      throw error;
-    }
-  }
-  pulledRemoteChanges = await pullLatestChanges(
-    options.remoteName,
+  const remoteLookupTarget = options.dryRun && normalizedRepoUrl ? normalizedRepoUrl : options.remoteName;
+  const remoteBranchExists = await doesRemoteBranchExist(
+    remoteLookupTarget,
     options.branchName,
     executionOptions
   );
-  const pushArgs = options.pushMode === "simple" ? ["push"] : ["push", options.remoteName, options.branchName];
-  await runGitCommand(pushArgs, executionOptions);
+  const pullCommand = buildPullCommandLabel(options.remoteName, options.branchName);
+  let pulledRemoteChanges = false;
+  const shouldPush = options.shouldPushLocalChanges || !remoteBranchExists;
+  if (remoteBranchExists) {
+    commands.push(pullCommand);
+  } else {
+    commands.push(
+      `# branche distante absente: ${options.remoteName}/${options.branchName}, pull ignore`
+    );
+  }
+  if (shouldPush) {
+    commands.push(
+      buildPushCommandLabel(
+        options.pushMode,
+        options.remoteName,
+        options.branchName,
+        !remoteBranchExists
+      )
+    );
+  }
+  if (options.dryRun) {
+    return {
+      dryRun: true,
+      remoteName: options.remoteName,
+      branchName: options.branchName,
+      hadChanges: shouldPush,
+      pulledRemoteChanges: false,
+      pushedLocalChanges: shouldPush,
+      remoteBranchExists,
+      commands
+    };
+  }
+  if (remoteBranchExists) {
+    pulledRemoteChanges = await pullLatestChanges(
+      options.remoteName,
+      options.branchName,
+      executionOptions
+    );
+  }
+  if (shouldPush) {
+    const pushArgs = buildPushCommandArgs(
+      options.pushMode,
+      options.remoteName,
+      options.branchName,
+      !remoteBranchExists
+    );
+    await runGitCommand(pushArgs, executionOptions);
+  }
   return {
     dryRun: false,
-    hadChanges: true,
+    remoteName: options.remoteName,
+    branchName: options.branchName,
+    hadChanges: pulledRemoteChanges || shouldPush,
     pulledRemoteChanges,
-    pushedLocalChanges: true,
+    pushedLocalChanges: shouldPush,
+    remoteBranchExists,
     commands
   };
 }
@@ -240,6 +289,13 @@ async function getRemoteUrl(remoteName, executionOptions) {
     }
     throw error;
   }
+}
+async function doesRemoteBranchExist(remoteName, branchName, executionOptions) {
+  const result = await runGitCommand(
+    ["ls-remote", "--heads", remoteName, branchName],
+    executionOptions
+  );
+  return result.stdout.trim().length > 0;
 }
 async function pullLatestChanges(remoteName, branchName, executionOptions) {
   const result = await runGitCommand(
@@ -308,8 +364,17 @@ function buildGitEnvironment(sshKeyPath) {
 function buildPullCommandLabel(remoteName, branchName) {
   return `git pull --rebase ${remoteName} ${branchName}`;
 }
-function buildPushCommandLabel(pushMode, remoteName, branchName) {
+function buildPushCommandLabel(pushMode, remoteName, branchName, setUpstream = false) {
+  if (setUpstream) {
+    return `git push -u ${remoteName} ${branchName}`;
+  }
   return pushMode === "simple" ? "git push" : `git push ${remoteName} ${branchName}`;
+}
+function buildPushCommandArgs(pushMode, remoteName, branchName, setUpstream) {
+  if (setUpstream) {
+    return ["push", "-u", remoteName, branchName];
+  }
+  return pushMode === "simple" ? ["push"] : ["push", remoteName, branchName];
 }
 function normalizeOptionalValue(value) {
   return value.trim();
@@ -782,18 +847,72 @@ async function writeFileAtomically(filePath, content) {
 
 // settings.ts
 var import_obsidian2 = require("obsidian");
+var DEFAULT_GITHUB_REPO_URL = "git@github.com:francoisdelpan/univers-utema.git";
 var DEFAULT_SETTINGS = {
   publishFolder: "Publish",
   autoMoveFolder: "",
-  remoteName: "origin",
-  branchName: "main",
-  repoUrl: "",
-  sshKeyPath: "",
+  syncTarget: "gitea",
+  repositories: {
+    gitea: {
+      remoteName: "origin",
+      branchName: "main",
+      repoUrl: "",
+      sshKeyPath: ""
+    },
+    github: {
+      remoteName: "github",
+      branchName: "main",
+      repoUrl: DEFAULT_GITHUB_REPO_URL,
+      sshKeyPath: ""
+    }
+  },
   missingLinkFallbackPath: "404.md",
   convertWikiLinksBeforePublish: true,
   pushMode: "explicit",
   dryRun: false
 };
+function normalizeSettings(loaded) {
+  const legacy = loaded ?? {};
+  const giteaSettings = {
+    ...DEFAULT_SETTINGS.repositories.gitea,
+    ...legacy.repositories?.gitea ?? {}
+  };
+  const githubSettings = {
+    ...DEFAULT_SETTINGS.repositories.github,
+    ...legacy.repositories?.github ?? {}
+  };
+  if (typeof legacy.remoteName === "string") {
+    giteaSettings.remoteName = legacy.remoteName;
+  }
+  if (typeof legacy.branchName === "string") {
+    giteaSettings.branchName = legacy.branchName;
+  }
+  if (typeof legacy.repoUrl === "string") {
+    giteaSettings.repoUrl = legacy.repoUrl;
+  }
+  if (typeof legacy.sshKeyPath === "string") {
+    giteaSettings.sshKeyPath = legacy.sshKeyPath;
+  }
+  return {
+    publishFolder: typeof legacy.publishFolder === "string" ? legacy.publishFolder : DEFAULT_SETTINGS.publishFolder,
+    autoMoveFolder: typeof legacy.autoMoveFolder === "string" ? legacy.autoMoveFolder : DEFAULT_SETTINGS.autoMoveFolder,
+    syncTarget: isSyncTarget(legacy.syncTarget) ? legacy.syncTarget : DEFAULT_SETTINGS.syncTarget,
+    repositories: {
+      gitea: giteaSettings,
+      github: githubSettings
+    },
+    missingLinkFallbackPath: typeof legacy.missingLinkFallbackPath === "string" ? legacy.missingLinkFallbackPath : DEFAULT_SETTINGS.missingLinkFallbackPath,
+    convertWikiLinksBeforePublish: typeof legacy.convertWikiLinksBeforePublish === "boolean" ? legacy.convertWikiLinksBeforePublish : DEFAULT_SETTINGS.convertWikiLinksBeforePublish,
+    pushMode: isPushMode(legacy.pushMode) ? legacy.pushMode : DEFAULT_SETTINGS.pushMode,
+    dryRun: typeof legacy.dryRun === "boolean" ? legacy.dryRun : DEFAULT_SETTINGS.dryRun
+  };
+}
+function isSyncTarget(value) {
+  return value === "gitea" || value === "github" || value === "both";
+}
+function isPushMode(value) {
+  return value === "explicit" || value === "simple";
+}
 var UtemaPublishSettingTab = class extends import_obsidian2.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
@@ -815,56 +934,146 @@ var UtemaPublishSettingTab = class extends import_obsidian2.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Remote name").setDesc("Nom du remote Git utilis\xE9 en mode de push explicite.").addText(
-      (text) => text.setPlaceholder("origin").setValue(this.plugin.settings.remoteName).onChange(async (value) => {
-        this.plugin.settings.remoteName = value.trim();
+    new import_obsidian2.Setting(containerEl).setName("Sync target").setDesc("Destination Git \xE0 synchroniser.").addDropdown(
+      (dropdown) => dropdown.addOption("gitea", "Repo Gitea").addOption("github", "Repo GitHub").addOption("both", "Les deux").setValue(this.plugin.settings.syncTarget).onChange(async (value) => {
+        this.plugin.settings.syncTarget = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Branch name").setDesc("Nom de la branche cible en mode de push explicite.").addText(
-      (text) => text.setPlaceholder("main").setValue(this.plugin.settings.branchName).onChange(async (value) => {
-        this.plugin.settings.branchName = value.trim();
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian2.Setting(containerEl).setName("Repository URL").setDesc("URL Git attendue pour le remote. Si le remote existe deja, son URL sera mise a jour automatiquement.").addText(
-      (text) => text.setPlaceholder("git@forge.example.com:org/repo.git").setValue(this.plugin.settings.repoUrl).onChange(async (value) => {
-        this.plugin.settings.repoUrl = value.trim();
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian2.Setting(containerEl).setName("SSH key path").setDesc("Chemin local vers la cl\xE9 SSH priv\xE9e \xE0 utiliser pour Git. Optionnel.").addText(
-      (text) => text.setPlaceholder("/Users/vous/.ssh/id_ed25519").setValue(this.plugin.settings.sshKeyPath).onChange(async (value) => {
-        this.plugin.settings.sshKeyPath = value.trim();
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian2.Setting(containerEl).setName("Missing link fallback").setDesc("Chemin Markdown \xE0 utiliser si une note cibl\xE9e n'existe pas dans le dossier synchronis\xE9.").addText(
+    this.displayRepositorySettings("Repo Gitea", "gitea");
+    this.displayRepositorySettings("Repo GitHub", "github");
+    this.displayGeneralSettings();
+  }
+  displayGeneralSettings() {
+    const generalSection = this.createSettingsSection("Param\xE9trage g\xE9n\xE9ral");
+    new import_obsidian2.Setting(generalSection).setName("Missing link fallback").setDesc("Chemin Markdown \xE0 utiliser si une note cibl\xE9e n'existe pas dans le dossier synchronis\xE9.").addText(
       (text) => text.setPlaceholder("404.md").setValue(this.plugin.settings.missingLinkFallbackPath).onChange(async (value) => {
         this.plugin.settings.missingLinkFallbackPath = value.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Convert wiki links before sync").setDesc("R\xE9sout les liens [[...]] en vrais liens Markdown `.md` avant Git.").addToggle(
+    new import_obsidian2.Setting(generalSection).setName("Convert wiki links before sync").setDesc("R\xE9sout les liens [[...]] en vrais liens Markdown `.md` avant Git.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.convertWikiLinksBeforePublish).onChange(async (value) => {
         this.plugin.settings.convertWikiLinksBeforePublish = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Push mode").setDesc("Simple = git push. Explicite = git push <remote> <branch>.").addDropdown(
+    new import_obsidian2.Setting(generalSection).setName("Push mode").setDesc("Simple = git push. Explicite = git push <remote> <branch>.").addDropdown(
       (dropdown) => dropdown.addOption("explicit", "Explicite").addOption("simple", "Simple").setValue(this.plugin.settings.pushMode).onChange(async (value) => {
         this.plugin.settings.pushMode = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Dry run").setDesc("Pr\xE9pare la sync sans modifier Git ni \xE9crire les conversions.").addToggle(
+    new import_obsidian2.Setting(generalSection).setName("Dry run").setDesc("Pr\xE9pare la sync sans modifier Git ni \xE9crire les conversions.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.dryRun).onChange(async (value) => {
         this.plugin.settings.dryRun = value;
         await this.plugin.saveSettings();
       })
     );
   }
+  displayRepositorySettings(title, repositoryKey) {
+    const repositorySection = this.createAccordionSection(title);
+    const repositorySettings = this.plugin.settings.repositories[repositoryKey];
+    new import_obsidian2.Setting(repositorySection).setName(`${title} remote name`).setDesc("Nom du remote Git utilis\xE9 en mode de push explicite.").addText(
+      (text) => text.setPlaceholder(repositoryKey === "github" ? "github" : "origin").setValue(repositorySettings.remoteName).onChange(async (value) => {
+        repositorySettings.remoteName = value.trim();
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian2.Setting(repositorySection).setName(`${title} branch name`).setDesc("Nom de la branche cible en mode de push explicite.").addText(
+      (text) => text.setPlaceholder("main").setValue(repositorySettings.branchName).onChange(async (value) => {
+        repositorySettings.branchName = value.trim();
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian2.Setting(repositorySection).setName(`${title} repository URL`).setDesc("URL Git attendue pour le remote. Si le remote existe deja, son URL sera mise a jour automatiquement.").addText(
+      (text) => text.setPlaceholder(
+        repositoryKey === "github" ? DEFAULT_GITHUB_REPO_URL : "git@forge.example.com:org/repo.git"
+      ).setValue(repositorySettings.repoUrl).onChange(async (value) => {
+        repositorySettings.repoUrl = value.trim();
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian2.Setting(repositorySection).setName(`${title} SSH key path`).setDesc("Chemin local vers la cl\xE9 SSH priv\xE9e \xE0 utiliser pour Git. Optionnel.").addText(
+      (text) => text.setPlaceholder("/Users/vous/.ssh/id_ed25519").setValue(repositorySettings.sshKeyPath).onChange(async (value) => {
+        repositorySettings.sshKeyPath = value.trim();
+        await this.plugin.saveSettings();
+      })
+    );
+  }
+  createSettingsSection(title) {
+    const section = this.containerEl.createDiv({ cls: "utema-publish-settings-section" });
+    section.createEl("h3", { text: title });
+    return section;
+  }
+  createAccordionSection(title) {
+    const details = this.containerEl.createEl("details", {
+      cls: "utema-publish-settings-accordion"
+    });
+    details.createEl("summary", {
+      text: title,
+      cls: "utema-publish-settings-accordion-summary"
+    });
+    return details.createDiv({ cls: "utema-publish-settings-accordion-content" });
+  }
 };
+
+// wikiPathUpdater.ts
+var import_node_fs3 = require("node:fs");
+var path2 = __toESM(require("node:path"));
+async function updateWikiPathPropertiesInDirectory(directoryPath, options) {
+  const markdownFiles = await collectMarkdownFiles(directoryPath);
+  const changedRelativePaths = [];
+  for (const filePath of markdownFiles) {
+    const originalContent = await import_node_fs3.promises.readFile(filePath, "utf8");
+    const wikiPath = toWikiPath(directoryPath, filePath);
+    const updatedContent = updateWikiPathProperty(originalContent, wikiPath);
+    if (updatedContent === originalContent) {
+      continue;
+    }
+    if (options.writeChanges) {
+      await import_node_fs3.promises.writeFile(filePath, updatedContent, "utf8");
+    }
+    changedRelativePaths.push(path2.relative(directoryPath, filePath));
+  }
+  return {
+    scannedFiles: markdownFiles.length,
+    changedFiles: changedRelativePaths.length,
+    changedRelativePaths
+  };
+}
+function updateWikiPathProperty(content, wikiPath) {
+  const lineEnding = content.includes("\r\n") ? "\r\n" : "\n";
+  const normalizedContent = content.replace(/\r\n/g, "\n");
+  const lines = normalizedContent.split("\n");
+  if (lines[0] !== "---") {
+    return content;
+  }
+  const frontmatterEndIndex = lines.findIndex(
+    (line, index) => index > 0 && line === "---"
+  );
+  if (frontmatterEndIndex === -1) {
+    return content;
+  }
+  const wikiPathLine = `wiki-path: "${escapeYamlDoubleQuotedString(wikiPath)}"`;
+  const wikiPathIndex = lines.findIndex(
+    (line, index) => index > 0 && index < frontmatterEndIndex && /^wiki-path\s*:/.test(line)
+  );
+  if (wikiPathIndex === -1) {
+    lines.splice(frontmatterEndIndex, 0, wikiPathLine);
+  } else {
+    lines[wikiPathIndex] = wikiPathLine;
+  }
+  return lines.join("\n").replace(/\n/g, lineEnding);
+}
+function toWikiPath(rootDirectory, filePath) {
+  const relativePath = path2.relative(rootDirectory, filePath);
+  const withoutExtension = relativePath.replace(/\.md$/i, "");
+  return withoutExtension.split(path2.sep).join("/");
+}
+function escapeYamlDoubleQuotedString(value) {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
 
 // main.ts
 var UtemaPublishPlugin = class extends import_obsidian3.Plugin {
@@ -901,10 +1110,7 @@ var UtemaPublishPlugin = class extends import_obsidian3.Plugin {
   }
   async loadSettings() {
     const loaded = await this.loadData();
-    this.settings = {
-      ...DEFAULT_SETTINGS,
-      ...loaded
-    };
+    this.settings = normalizeSettings(loaded);
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -960,9 +1166,10 @@ var UtemaPublishPlugin = class extends import_obsidian3.Plugin {
       new import_obsidian3.Notice("Impossible de d\xE9terminer le chemin local du vault.");
       return;
     }
-    const publishDirectory = path2.join(vaultBasePath, (0, import_obsidian3.normalizePath)(publishFolder));
+    const publishDirectory = path3.join(vaultBasePath, (0, import_obsidian3.normalizePath)(publishFolder));
     console.info("[UTEMA Sync] Starting sync", {
       publishDirectory,
+      syncTarget: this.settings.syncTarget,
       pushMode: this.settings.pushMode,
       dryRun: this.settings.dryRun
     });
@@ -977,31 +1184,52 @@ var UtemaPublishPlugin = class extends import_obsidian3.Plugin {
         changedFiles: 0,
         changedRelativePaths: []
       };
-      const gitSummary = await publishWithGit({
+      const wikiPathSummary = await updateWikiPathPropertiesInDirectory(
+        publishDirectory,
+        {
+          writeChanges: !this.settings.dryRun
+        }
+      );
+      const localGitSummary = await publishWithGit({
         workingDirectory: publishDirectory,
         commitMessage,
-        remoteName: this.settings.remoteName.trim() || DEFAULT_SETTINGS.remoteName,
-        branchName: this.settings.branchName.trim() || DEFAULT_SETTINGS.branchName,
-        repoUrl: this.settings.repoUrl.trim(),
-        sshKeyPath: this.settings.sshKeyPath.trim(),
         pushMode: this.settings.pushMode,
         dryRun: this.settings.dryRun
       });
+      const remoteSyncResults = await this.syncSelectedRepositories(
+        publishDirectory,
+        localGitSummary.hadChanges
+      );
+      const successfulRemoteSyncs = remoteSyncResults.filter(
+        (result) => result.status === "fulfilled"
+      );
+      const failedRemoteSyncs = remoteSyncResults.filter(
+        (result) => result.status === "rejected"
+      );
+      const hadRemoteChanges = successfulRemoteSyncs.some((result) => result.summary.hadChanges);
       console.info("[UTEMA Sync] Sync summary", {
         conversionSummary,
-        gitSummary
+        wikiPathSummary,
+        localGitSummary,
+        remoteSyncResults
       });
-      if (!gitSummary.hadChanges) {
+      if (!localGitSummary.hadChanges && !hadRemoteChanges && failedRemoteSyncs.length === 0) {
         new import_obsidian3.Notice("Aucun changement \xE0 synchroniser.");
         return;
       }
       if (this.settings.dryRun) {
         new import_obsidian3.Notice(
-          `Dry run termin\xE9. ${conversionSummary.changedFiles} fichier(s) converti(s), synchronisation Git non ex\xE9cut\xE9e.`
+          `Dry run termin\xE9. ${conversionSummary.changedFiles} fichier(s) converti(s), ${wikiPathSummary.changedFiles} wiki-path v\xE9rifi\xE9(s), ${successfulRemoteSyncs.length} repo(s) v\xE9rifi\xE9(s).`
         );
         return;
       }
-      new import_obsidian3.Notice("Synchronisation Git termin\xE9e.");
+      if (failedRemoteSyncs.length > 0) {
+        new import_obsidian3.Notice(this.buildPartialSyncNotice(successfulRemoteSyncs, failedRemoteSyncs), 1e4);
+        return;
+      }
+      new import_obsidian3.Notice(
+        `Synchronisation Git termin\xE9e: ${successfulRemoteSyncs.map((result) => result.label).join(", ")}.`
+      );
     } catch (error) {
       const message = this.formatErrorMessage(error);
       console.error("[UTEMA Sync] Sync failed", error);
@@ -1019,7 +1247,7 @@ var UtemaPublishPlugin = class extends import_obsidian3.Plugin {
       new import_obsidian3.Notice("Impossible de d\xE9terminer le chemin local du vault.");
       return;
     }
-    const publishDirectory = path2.join(vaultBasePath, (0, import_obsidian3.normalizePath)(publishFolder));
+    const publishDirectory = path3.join(vaultBasePath, (0, import_obsidian3.normalizePath)(publishFolder));
     try {
       await ensureExistingDirectory(publishDirectory);
       const conversionSummary = await convertMarkdownLinksToObsidianInDirectory(
@@ -1046,6 +1274,66 @@ var UtemaPublishPlugin = class extends import_obsidian3.Plugin {
       return this.app.vault.adapter.getBasePath();
     }
     return null;
+  }
+  async syncSelectedRepositories(publishDirectory, shouldPushLocalChanges) {
+    const repositories = this.getSelectedRepositories();
+    const results = [];
+    let shouldPushToRemainingRepositories = shouldPushLocalChanges;
+    for (const repository of repositories) {
+      try {
+        const summary = await syncGitRemote({
+          workingDirectory: publishDirectory,
+          remoteName: repository.settings.remoteName.trim() || DEFAULT_SETTINGS.repositories[repository.key].remoteName,
+          branchName: repository.settings.branchName.trim() || DEFAULT_SETTINGS.repositories[repository.key].branchName,
+          repoUrl: repository.settings.repoUrl.trim(),
+          sshKeyPath: repository.settings.sshKeyPath.trim(),
+          pushMode: this.settings.pushMode,
+          dryRun: this.settings.dryRun,
+          shouldPushLocalChanges: shouldPushToRemainingRepositories
+        });
+        results.push({
+          status: "fulfilled",
+          key: repository.key,
+          label: repository.label,
+          summary
+        });
+        if (summary.pulledRemoteChanges) {
+          shouldPushToRemainingRepositories = true;
+        }
+      } catch (error) {
+        console.error(`[UTEMA Sync] ${repository.label} sync failed`, error);
+        results.push({
+          status: "rejected",
+          key: repository.key,
+          label: repository.label,
+          error
+        });
+      }
+    }
+    return results;
+  }
+  getSelectedRepositories() {
+    const repositories = [];
+    if (this.settings.syncTarget === "gitea" || this.settings.syncTarget === "both") {
+      repositories.push({
+        key: "gitea",
+        label: "Gitea",
+        settings: this.settings.repositories.gitea
+      });
+    }
+    if (this.settings.syncTarget === "github" || this.settings.syncTarget === "both") {
+      repositories.push({
+        key: "github",
+        label: "GitHub",
+        settings: this.settings.repositories.github
+      });
+    }
+    return repositories;
+  }
+  buildPartialSyncNotice(successfulRemoteSyncs, failedRemoteSyncs) {
+    const successfulLabels = successfulRemoteSyncs.map((result) => result.label).join(", ") || "aucun";
+    const failedLabels = failedRemoteSyncs.map((result) => `${result.label}: ${this.formatErrorMessage(result.error)}`).join(" | ");
+    return `Synchronisation partielle. R\xE9ussi: ${successfulLabels}. \xC9chec: ${failedLabels}`;
   }
   formatErrorMessage(error) {
     if (error instanceof GitServiceError) {
@@ -1105,7 +1393,7 @@ var FolderSelectionModal = class extends import_obsidian3.FuzzySuggestModal {
 async function ensureExistingDirectory(directoryPath) {
   let stats;
   try {
-    stats = await import_node_fs3.promises.stat(directoryPath);
+    stats = await import_node_fs4.promises.stat(directoryPath);
   } catch {
     throw new Error(`Le dossier cible est introuvable: ${directoryPath}`);
   }

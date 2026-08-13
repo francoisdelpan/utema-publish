@@ -14,19 +14,36 @@ export interface GitCommandResult {
 export interface GitPublishOptions {
   workingDirectory: string;
   commitMessage: string;
+  pushMode: PushMode;
+  dryRun: boolean;
+}
+
+export interface GitRemoteSyncOptions {
+  workingDirectory: string;
   remoteName: string;
   branchName: string;
   repoUrl: string;
   sshKeyPath: string;
   pushMode: PushMode;
   dryRun: boolean;
+  shouldPushLocalChanges: boolean;
 }
 
 export interface GitPublishSummary {
   dryRun: boolean;
   hadChanges: boolean;
+  committedLocalChanges: boolean;
+  commands: string[];
+}
+
+export interface GitRemoteSyncSummary {
+  dryRun: boolean;
+  remoteName: string;
+  branchName: string;
+  hadChanges: boolean;
   pulledRemoteChanges: boolean;
   pushedLocalChanges: boolean;
+  remoteBranchExists: boolean;
   commands: string[];
 }
 
@@ -75,55 +92,28 @@ export async function publishWithGit(
   const commands: string[] = [];
   const executionOptions: GitExecutionOptions = {
     workingDirectory: options.workingDirectory,
-    sshKeyPath: normalizeOptionalValue(options.sshKeyPath),
   };
 
-  if (executionOptions.sshKeyPath) {
-    await ensureReadableSshKey(executionOptions.sshKeyPath);
-  }
-
-  const normalizedRepoUrl = normalizeOptionalValue(options.repoUrl);
-  if (normalizedRepoUrl && !options.dryRun) {
-    await ensureRemoteConfigured(options.remoteName, normalizedRepoUrl, executionOptions);
-  } else if (normalizedRepoUrl) {
-    commands.push(`# remote attendu: ${options.remoteName} -> ${normalizedRepoUrl}`);
-  }
-
   const statusBefore = await getStatusSummary(executionOptions);
-  const pullCommand = buildPullCommandLabel(options.remoteName, options.branchName);
-  let pulledRemoteChanges = false;
+  const hasLocalChanges = Boolean(statusBefore);
 
-  if (!statusBefore) {
-    commands.push(pullCommand);
-
-    if (!options.dryRun) {
-      pulledRemoteChanges = await pullLatestChanges(
-        options.remoteName,
-        options.branchName,
-        executionOptions,
-      );
-    }
-
+  if (!hasLocalChanges) {
     return {
       dryRun: options.dryRun,
-      hadChanges: pulledRemoteChanges,
-      pulledRemoteChanges,
-      pushedLocalChanges: false,
+      hadChanges: false,
+      committedLocalChanges: false,
       commands,
     };
   }
 
   commands.push("git add .");
   commands.push(`git commit -m "${options.commitMessage}"`);
-  commands.push(pullCommand);
-  commands.push(buildPushCommandLabel(options.pushMode, options.remoteName, options.branchName));
 
   if (options.dryRun) {
     return {
       dryRun: true,
       hadChanges: true,
-      pulledRemoteChanges: false,
-      pushedLocalChanges: true,
+      committedLocalChanges: false,
       commands,
     };
   }
@@ -138,23 +128,104 @@ export async function publishWithGit(
     }
   }
 
-  pulledRemoteChanges = await pullLatestChanges(
-    options.remoteName,
-    options.branchName,
-    executionOptions,
-  );
-
-  const pushArgs =
-    options.pushMode === "simple"
-      ? ["push"]
-      : ["push", options.remoteName, options.branchName];
-  await runGitCommand(pushArgs, executionOptions);
-
   return {
     dryRun: false,
     hadChanges: true,
+    committedLocalChanges: true,
+    commands,
+  };
+}
+
+export async function syncGitRemote(
+  options: GitRemoteSyncOptions,
+): Promise<GitRemoteSyncSummary> {
+  const commands: string[] = [];
+  const executionOptions: GitExecutionOptions = {
+    workingDirectory: options.workingDirectory,
+    sshKeyPath: normalizeOptionalValue(options.sshKeyPath),
+  };
+
+  if (executionOptions.sshKeyPath) {
+    await ensureReadableSshKey(executionOptions.sshKeyPath);
+  }
+
+  const normalizedRepoUrl = normalizeOptionalValue(options.repoUrl);
+  if (normalizedRepoUrl && !options.dryRun) {
+    await ensureRemoteConfigured(options.remoteName, normalizedRepoUrl, executionOptions);
+  } else if (normalizedRepoUrl) {
+    commands.push(`# remote attendu: ${options.remoteName} -> ${normalizedRepoUrl}`);
+  }
+
+  const remoteLookupTarget = options.dryRun && normalizedRepoUrl
+    ? normalizedRepoUrl
+    : options.remoteName;
+  const remoteBranchExists = await doesRemoteBranchExist(
+    remoteLookupTarget,
+    options.branchName,
+    executionOptions,
+  );
+  const pullCommand = buildPullCommandLabel(options.remoteName, options.branchName);
+  let pulledRemoteChanges = false;
+  const shouldPush = options.shouldPushLocalChanges || !remoteBranchExists;
+
+  if (remoteBranchExists) {
+    commands.push(pullCommand);
+  } else {
+    commands.push(
+      `# branche distante absente: ${options.remoteName}/${options.branchName}, pull ignore`,
+    );
+  }
+
+  if (shouldPush) {
+    commands.push(
+      buildPushCommandLabel(
+        options.pushMode,
+        options.remoteName,
+        options.branchName,
+        !remoteBranchExists,
+      ),
+    );
+  }
+
+  if (options.dryRun) {
+    return {
+      dryRun: true,
+      remoteName: options.remoteName,
+      branchName: options.branchName,
+      hadChanges: shouldPush,
+      pulledRemoteChanges: false,
+      pushedLocalChanges: shouldPush,
+      remoteBranchExists,
+      commands,
+    };
+  }
+
+  if (remoteBranchExists) {
+    pulledRemoteChanges = await pullLatestChanges(
+      options.remoteName,
+      options.branchName,
+      executionOptions,
+    );
+  }
+
+  if (shouldPush) {
+    const pushArgs = buildPushCommandArgs(
+      options.pushMode,
+      options.remoteName,
+      options.branchName,
+      !remoteBranchExists,
+    );
+    await runGitCommand(pushArgs, executionOptions);
+  }
+
+  return {
+    dryRun: false,
+    remoteName: options.remoteName,
+    branchName: options.branchName,
+    hadChanges: pulledRemoteChanges || shouldPush,
     pulledRemoteChanges,
-    pushedLocalChanges: true,
+    pushedLocalChanges: shouldPush,
+    remoteBranchExists,
     commands,
   };
 }
@@ -201,6 +272,19 @@ async function getRemoteUrl(
 
     throw error;
   }
+}
+
+async function doesRemoteBranchExist(
+  remoteName: string,
+  branchName: string,
+  executionOptions: GitExecutionOptions,
+): Promise<boolean> {
+  const result = await runGitCommand(
+    ["ls-remote", "--heads", remoteName, branchName],
+    executionOptions,
+  );
+
+  return result.stdout.trim().length > 0;
 }
 
 async function pullLatestChanges(
@@ -301,10 +385,30 @@ function buildPushCommandLabel(
   pushMode: PushMode,
   remoteName: string,
   branchName: string,
+  setUpstream = false,
 ): string {
+  if (setUpstream) {
+    return `git push -u ${remoteName} ${branchName}`;
+  }
+
   return pushMode === "simple"
     ? "git push"
     : `git push ${remoteName} ${branchName}`;
+}
+
+function buildPushCommandArgs(
+  pushMode: PushMode,
+  remoteName: string,
+  branchName: string,
+  setUpstream: boolean,
+): string[] {
+  if (setUpstream) {
+    return ["push", "-u", remoteName, branchName];
+  }
+
+  return pushMode === "simple"
+    ? ["push"]
+    : ["push", remoteName, branchName];
 }
 
 function normalizeOptionalValue(value: string): string {

@@ -14,7 +14,9 @@ import { CommitModal } from "./commitModal";
 import {
   ensureGitRepository,
   GitServiceError,
+  type GitRemoteSyncSummary,
   publishWithGit,
+  syncGitRemote,
 } from "./gitService";
 import {
   convertMarkdownLinksToObsidianInDirectory,
@@ -22,9 +24,13 @@ import {
 } from "./linkConverter";
 import {
   DEFAULT_SETTINGS,
+  normalizeSettings,
   UtemaPublishSettingTab,
+  type GitRepositorySettings,
+  type RepositoryKey,
   type UtemaPublishSettings,
 } from "./settings";
+import { updateWikiPathPropertiesInDirectory } from "./wikiPathUpdater";
 
 export default class UtemaPublishPlugin extends Plugin {
   settings: UtemaPublishSettings = DEFAULT_SETTINGS;
@@ -63,10 +69,7 @@ export default class UtemaPublishPlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     const loaded = await this.loadData();
-    this.settings = {
-      ...DEFAULT_SETTINGS,
-      ...loaded,
-    };
+    this.settings = normalizeSettings(loaded);
   }
 
   async saveSettings(): Promise<void> {
@@ -138,6 +141,7 @@ export default class UtemaPublishPlugin extends Plugin {
     const publishDirectory = path.join(vaultBasePath, normalizePath(publishFolder));
     console.info("[UTEMA Sync] Starting sync", {
       publishDirectory,
+      syncTarget: this.settings.syncTarget,
       pushMode: this.settings.pushMode,
       dryRun: this.settings.dryRun,
     });
@@ -159,35 +163,64 @@ export default class UtemaPublishPlugin extends Plugin {
             changedRelativePaths: [],
           };
 
-      const gitSummary = await publishWithGit({
+      const wikiPathSummary = await updateWikiPathPropertiesInDirectory(
+        publishDirectory,
+        {
+          writeChanges: !this.settings.dryRun,
+        },
+      );
+
+      const localGitSummary = await publishWithGit({
         workingDirectory: publishDirectory,
         commitMessage,
-        remoteName: this.settings.remoteName.trim() || DEFAULT_SETTINGS.remoteName,
-        branchName: this.settings.branchName.trim() || DEFAULT_SETTINGS.branchName,
-        repoUrl: this.settings.repoUrl.trim(),
-        sshKeyPath: this.settings.sshKeyPath.trim(),
         pushMode: this.settings.pushMode,
         dryRun: this.settings.dryRun,
       });
+      const remoteSyncResults = await this.syncSelectedRepositories(
+        publishDirectory,
+        localGitSummary.hadChanges,
+      );
+      const successfulRemoteSyncs = remoteSyncResults.filter(
+        (result) => result.status === "fulfilled",
+      );
+      const failedRemoteSyncs = remoteSyncResults.filter(
+        (result) => result.status === "rejected",
+      );
+      const hadRemoteChanges = successfulRemoteSyncs.some((result) => result.summary.hadChanges);
 
       console.info("[UTEMA Sync] Sync summary", {
         conversionSummary,
-        gitSummary,
+        wikiPathSummary,
+        localGitSummary,
+        remoteSyncResults,
       });
 
-      if (!gitSummary.hadChanges) {
+      if (
+        !localGitSummary.hadChanges
+        && !hadRemoteChanges
+        && failedRemoteSyncs.length === 0
+      ) {
         new Notice("Aucun changement à synchroniser.");
         return;
       }
 
       if (this.settings.dryRun) {
         new Notice(
-          `Dry run terminé. ${conversionSummary.changedFiles} fichier(s) converti(s), synchronisation Git non exécutée.`,
+          `Dry run terminé. ${conversionSummary.changedFiles} fichier(s) converti(s), ${wikiPathSummary.changedFiles} wiki-path vérifié(s), ${successfulRemoteSyncs.length} repo(s) vérifié(s).`,
         );
         return;
       }
 
-      new Notice("Synchronisation Git terminée.");
+      if (failedRemoteSyncs.length > 0) {
+        new Notice(this.buildPartialSyncNotice(successfulRemoteSyncs, failedRemoteSyncs), 10000);
+        return;
+      }
+
+      new Notice(
+        `Synchronisation Git terminée: ${successfulRemoteSyncs
+          .map((result) => result.label)
+          .join(", ")}.`,
+      );
     } catch (error) {
       const message = this.formatErrorMessage(error);
       console.error("[UTEMA Sync] Sync failed", error);
@@ -248,6 +281,89 @@ export default class UtemaPublishPlugin extends Plugin {
     return null;
   }
 
+  private async syncSelectedRepositories(
+    publishDirectory: string,
+    shouldPushLocalChanges: boolean,
+  ): Promise<RemoteSyncResult[]> {
+    const repositories = this.getSelectedRepositories();
+    const results: RemoteSyncResult[] = [];
+    let shouldPushToRemainingRepositories = shouldPushLocalChanges;
+
+    for (const repository of repositories) {
+      try {
+        const summary = await syncGitRemote({
+          workingDirectory: publishDirectory,
+          remoteName: repository.settings.remoteName.trim()
+            || DEFAULT_SETTINGS.repositories[repository.key].remoteName,
+          branchName: repository.settings.branchName.trim()
+            || DEFAULT_SETTINGS.repositories[repository.key].branchName,
+          repoUrl: repository.settings.repoUrl.trim(),
+          sshKeyPath: repository.settings.sshKeyPath.trim(),
+          pushMode: this.settings.pushMode,
+          dryRun: this.settings.dryRun,
+          shouldPushLocalChanges: shouldPushToRemainingRepositories,
+        });
+
+        results.push({
+          status: "fulfilled",
+          key: repository.key,
+          label: repository.label,
+          summary,
+        });
+
+        if (summary.pulledRemoteChanges) {
+          shouldPushToRemainingRepositories = true;
+        }
+      } catch (error) {
+        console.error(`[UTEMA Sync] ${repository.label} sync failed`, error);
+        results.push({
+          status: "rejected",
+          key: repository.key,
+          label: repository.label,
+          error,
+        });
+      }
+    }
+
+    return results;
+  }
+
+  private getSelectedRepositories(): SelectedRepository[] {
+    const repositories: SelectedRepository[] = [];
+
+    if (this.settings.syncTarget === "gitea" || this.settings.syncTarget === "both") {
+      repositories.push({
+        key: "gitea",
+        label: "Gitea",
+        settings: this.settings.repositories.gitea,
+      });
+    }
+
+    if (this.settings.syncTarget === "github" || this.settings.syncTarget === "both") {
+      repositories.push({
+        key: "github",
+        label: "GitHub",
+        settings: this.settings.repositories.github,
+      });
+    }
+
+    return repositories;
+  }
+
+  private buildPartialSyncNotice(
+    successfulRemoteSyncs: FulfilledRemoteSyncResult[],
+    failedRemoteSyncs: RejectedRemoteSyncResult[],
+  ): string {
+    const successfulLabels = successfulRemoteSyncs
+      .map((result) => result.label)
+      .join(", ") || "aucun";
+    const failedLabels = failedRemoteSyncs
+      .map((result) => `${result.label}: ${this.formatErrorMessage(result.error)}`)
+      .join(" | ");
+
+    return `Synchronisation partielle. Réussi: ${successfulLabels}. Échec: ${failedLabels}`;
+  }
+
   private formatErrorMessage(error: unknown): string {
     if (error instanceof GitServiceError) {
       const details = [error.stderr.trim(), error.stdout.trim()]
@@ -292,6 +408,28 @@ export default class UtemaPublishPlugin extends Plugin {
     return candidatePath;
   }
 }
+
+interface SelectedRepository {
+  key: RepositoryKey;
+  label: string;
+  settings: GitRepositorySettings;
+}
+
+interface FulfilledRemoteSyncResult {
+  status: "fulfilled";
+  key: RepositoryKey;
+  label: string;
+  summary: GitRemoteSyncSummary;
+}
+
+interface RejectedRemoteSyncResult {
+  status: "rejected";
+  key: RepositoryKey;
+  label: string;
+  error: unknown;
+}
+
+type RemoteSyncResult = FulfilledRemoteSyncResult | RejectedRemoteSyncResult;
 
 class FolderSelectionModal extends FuzzySuggestModal<string> {
   private readonly rootFolder: string;
