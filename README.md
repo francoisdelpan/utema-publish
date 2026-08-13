@@ -9,7 +9,8 @@ Plugin Obsidian desktop-only pour synchroniser un dossier du vault avec un dép�
 3. résout si possible la vraie cible Markdown dans le dossier synchronisé ;
 4. convertit aussi les embeds de fichiers non-Markdown `![[image.png]]` vers `![](relative/path.png)` ;
 5. met à jour la propriété frontmatter `wiki-path` avec le chemin réel relatif à la racine synchronisée ;
-6. exécute un workflow Git local simple, vers Gitea, GitHub ou les deux :
+6. exclut de Git les fichiers Markdown dont le frontmatter contient `is-publish: false` ;
+7. exécute un workflow Git local simple, vers Gitea, GitHub ou les deux :
    - `git add .`
    - `git commit -m "..."`
    - pour chaque repo sélectionné :
@@ -149,6 +150,16 @@ Réglages multi-repos :
 
 Si `Les deux` est sélectionné, le commit local est créé une seule fois. Chaque repo est ensuite synchronisé indépendamment : si un push échoue, le plugin continue avec l'autre repo et affiche un rapport partiel.
 
+## Exclusion de publication
+
+Si une note Markdown contient dans son frontmatter YAML :
+
+```yaml
+is-publish: false
+```
+
+le plugin l’ajoute automatiquement au bloc géré de `.git/info/exclude` avant le commit. Si le fichier était déjà versionné, il est retiré de l’index avec `git rm --cached`, puis cette suppression est poussée aux repos sélectionnés. Le fichier reste localement dans Obsidian.
+
 ## Fallback 404
 
 Si une note cible n'est pas présente dans le dossier synchronisé, le lien converti pointera vers la page définie dans `Missing link fallback`.
@@ -223,8 +234,9 @@ Workflow :
 3. vérifier qu'il s'agit bien d'un dépôt Git ;
 4. convertir les wikilinks des fichiers `.md` ;
 5. remplacer ou ajouter `wiki-path` dans le frontmatter YAML existant avec le chemin relatif sans `.md` ;
-6. lancer `git add` et `git commit` une seule fois ;
-7. synchroniser les repos sélectionnés selon `Sync target`.
+6. mettre à jour l’exclusion locale Git pour les fichiers avec `is-publish: false` et retirer de l’index ceux déjà trackés ;
+7. lancer `git add` et `git commit` une seule fois ;
+8. synchroniser les repos sélectionnés selon `Sync target`.
 
 ## Développement local
 

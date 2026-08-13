@@ -212,7 +212,7 @@ export class UtemaPublishSettingTab extends PluginSettingTab {
 
     new Setting(generalSection)
       .setName("Push mode")
-      .setDesc("Simple = git push. Explicite = git push <remote> <branch>.")
+      .setDesc("Simple = git push. Explicite = git push <remote> <branch>. En mode Les deux, le push explicite est forcé.")
       .addDropdown((dropdown) =>
         dropdown
           .addOption("explicit", "Explicite")

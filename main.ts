@@ -30,6 +30,7 @@ import {
   type RepositoryKey,
   type UtemaPublishSettings,
 } from "./settings";
+import { applyPublishFilter } from "./publishFilter";
 import { updateWikiPathPropertiesInDirectory } from "./wikiPathUpdater";
 
 export default class UtemaPublishPlugin extends Plugin {
@@ -169,6 +170,12 @@ export default class UtemaPublishPlugin extends Plugin {
           writeChanges: !this.settings.dryRun,
         },
       );
+      const publishFilterSummary = await applyPublishFilter(
+        publishDirectory,
+        {
+          writeChanges: !this.settings.dryRun,
+        },
+      );
 
       const localGitSummary = await publishWithGit({
         workingDirectory: publishDirectory,
@@ -191,9 +198,17 @@ export default class UtemaPublishPlugin extends Plugin {
       console.info("[UTEMA Sync] Sync summary", {
         conversionSummary,
         wikiPathSummary,
+        publishFilterSummary,
         localGitSummary,
         remoteSyncResults,
       });
+
+      if (this.settings.dryRun) {
+        new Notice(
+          `Dry run terminé. ${conversionSummary.changedFiles} fichier(s) converti(s), ${wikiPathSummary.changedFiles} wiki-path vérifié(s), ${publishFilterSummary.excludedFiles} fichier(s) non publiable(s), ${successfulRemoteSyncs.length} repo(s) vérifié(s).`,
+        );
+        return;
+      }
 
       if (
         !localGitSummary.hadChanges
@@ -201,13 +216,6 @@ export default class UtemaPublishPlugin extends Plugin {
         && failedRemoteSyncs.length === 0
       ) {
         new Notice("Aucun changement à synchroniser.");
-        return;
-      }
-
-      if (this.settings.dryRun) {
-        new Notice(
-          `Dry run terminé. ${conversionSummary.changedFiles} fichier(s) converti(s), ${wikiPathSummary.changedFiles} wiki-path vérifié(s), ${successfulRemoteSyncs.length} repo(s) vérifié(s).`,
-        );
         return;
       }
 
@@ -286,6 +294,7 @@ export default class UtemaPublishPlugin extends Plugin {
     shouldPushLocalChanges: boolean,
   ): Promise<RemoteSyncResult[]> {
     const repositories = this.getSelectedRepositories();
+    const pushMode = repositories.length > 1 ? "explicit" : this.settings.pushMode;
     const results: RemoteSyncResult[] = [];
     let shouldPushToRemainingRepositories = shouldPushLocalChanges;
 
@@ -299,7 +308,7 @@ export default class UtemaPublishPlugin extends Plugin {
             || DEFAULT_SETTINGS.repositories[repository.key].branchName,
           repoUrl: repository.settings.repoUrl.trim(),
           sshKeyPath: repository.settings.sshKeyPath.trim(),
-          pushMode: this.settings.pushMode,
+          pushMode,
           dryRun: this.settings.dryRun,
           shouldPushLocalChanges: shouldPushToRemainingRepositories,
         });

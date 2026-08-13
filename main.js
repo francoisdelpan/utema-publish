@@ -56,8 +56,8 @@ __export(main_exports, {
   default: () => UtemaPublishPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var path3 = __toESM(require("node:path"));
-var import_node_fs4 = require("node:fs");
+var path4 = __toESM(require("node:path"));
+var import_node_fs5 = require("node:fs");
 var import_obsidian3 = require("obsidian");
 
 // commitModal.ts
@@ -958,7 +958,7 @@ var UtemaPublishSettingTab = class extends import_obsidian2.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian2.Setting(generalSection).setName("Push mode").setDesc("Simple = git push. Explicite = git push <remote> <branch>.").addDropdown(
+    new import_obsidian2.Setting(generalSection).setName("Push mode").setDesc("Simple = git push. Explicite = git push <remote> <branch>. En mode Les deux, le push explicite est forc\xE9.").addDropdown(
       (dropdown) => dropdown.addOption("explicit", "Explicite").addOption("simple", "Simple").setValue(this.plugin.settings.pushMode).onChange(async (value) => {
         this.plugin.settings.pushMode = value;
         await this.plugin.saveSettings();
@@ -1018,23 +1018,188 @@ var UtemaPublishSettingTab = class extends import_obsidian2.PluginSettingTab {
   }
 };
 
-// wikiPathUpdater.ts
+// publishFilter.ts
+var import_node_child_process2 = require("node:child_process");
 var import_node_fs3 = require("node:fs");
 var path2 = __toESM(require("node:path"));
+var import_node_util2 = require("node:util");
+var execFileAsync2 = (0, import_node_util2.promisify)(import_node_child_process2.execFile);
+var MANAGED_EXCLUDE_START = "# BEGIN UTEMA Sync is-publish=false";
+var MANAGED_EXCLUDE_END = "# END UTEMA Sync is-publish=false";
+async function applyPublishFilter(directoryPath, options) {
+  const markdownFiles = await collectMarkdownFiles(directoryPath);
+  const excludedRelativePaths = [];
+  for (const filePath of markdownFiles) {
+    const content = await import_node_fs3.promises.readFile(filePath, "utf8");
+    if (!hasIsPublishFalse(content)) {
+      continue;
+    }
+    excludedRelativePaths.push(toGitRelativePath(directoryPath, filePath));
+  }
+  excludedRelativePaths.sort((left, right) => left.localeCompare(right));
+  const updatedGitExclude = await updateGitInfoExclude(
+    directoryPath,
+    excludedRelativePaths,
+    options.writeChanges
+  );
+  const trackedExcludedPaths = await getTrackedFiles(directoryPath, excludedRelativePaths);
+  const commands = [];
+  if (updatedGitExclude) {
+    commands.push(
+      `# update .git/info/exclude (${excludedRelativePaths.length} is-publish=false file(s))`
+    );
+  }
+  if (trackedExcludedPaths.length > 0) {
+    commands.push(
+      `git rm --cached -- ${trackedExcludedPaths.map((relativePath) => `"${relativePath.replace(/"/g, '\\"')}"`).join(" ")}`
+    );
+    if (options.writeChanges) {
+      await removeTrackedFilesFromIndex(directoryPath, trackedExcludedPaths);
+    }
+  }
+  return {
+    scannedFiles: markdownFiles.length,
+    excludedFiles: excludedRelativePaths.length,
+    excludedRelativePaths,
+    removedFromGitIndex: trackedExcludedPaths.length,
+    updatedGitExclude,
+    commands
+  };
+}
+function hasIsPublishFalse(content) {
+  const normalizedContent = content.replace(/\r\n/g, "\n");
+  const lines = normalizedContent.split("\n");
+  if (lines[0] !== "---") {
+    return false;
+  }
+  const frontmatterEndIndex = lines.findIndex(
+    (line, index) => index > 0 && line === "---"
+  );
+  if (frontmatterEndIndex === -1) {
+    return false;
+  }
+  for (let index = 1; index < frontmatterEndIndex; index += 1) {
+    const match = /^is-publish\s*:\s*(.*)$/.exec(lines[index]);
+    if (!match) {
+      continue;
+    }
+    return isFalseYamlValue(match[1]);
+  }
+  return false;
+}
+async function updateGitInfoExclude(directoryPath, excludedRelativePaths, writeChanges) {
+  const excludePath = path2.join(directoryPath, ".git", "info", "exclude");
+  const currentContent = await readOptionalFile(excludePath);
+  const nextContent = buildGitInfoExcludeContent(currentContent, excludedRelativePaths);
+  if (nextContent === currentContent) {
+    return false;
+  }
+  if (writeChanges) {
+    await import_node_fs3.promises.writeFile(excludePath, nextContent, "utf8");
+  }
+  return true;
+}
+function buildGitInfoExcludeContent(currentContent, excludedRelativePaths) {
+  const contentWithoutManagedBlock = removeManagedExcludeBlock(currentContent);
+  if (excludedRelativePaths.length === 0) {
+    return contentWithoutManagedBlock;
+  }
+  const managedBlock = [
+    MANAGED_EXCLUDE_START,
+    "# Generated from Markdown frontmatter property: is-publish: false",
+    ...excludedRelativePaths.map((relativePath) => `/${escapeGitIgnorePattern(relativePath)}`),
+    MANAGED_EXCLUDE_END,
+    ""
+  ].join("\n");
+  return `${contentWithoutManagedBlock}${contentWithoutManagedBlock ? "\n" : ""}${managedBlock}`;
+}
+function removeManagedExcludeBlock(content) {
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const keptLines = [];
+  let insideManagedBlock = false;
+  for (const line of lines) {
+    if (line === MANAGED_EXCLUDE_START) {
+      insideManagedBlock = true;
+      continue;
+    }
+    if (line === MANAGED_EXCLUDE_END) {
+      insideManagedBlock = false;
+      continue;
+    }
+    if (!insideManagedBlock) {
+      keptLines.push(line);
+    }
+  }
+  return keptLines.join("\n").trimEnd();
+}
+async function getTrackedFiles(directoryPath, relativePaths) {
+  if (relativePaths.length === 0) {
+    return [];
+  }
+  const result = await execFileAsync2(
+    "git",
+    ["ls-files", "-z", "--", ...relativePaths],
+    {
+      cwd: directoryPath,
+      maxBuffer: 1024 * 1024,
+      windowsHide: true
+    }
+  );
+  return result.stdout.split("\0").filter(Boolean);
+}
+async function removeTrackedFilesFromIndex(directoryPath, relativePaths) {
+  const chunkSize = 50;
+  for (let index = 0; index < relativePaths.length; index += chunkSize) {
+    const chunk = relativePaths.slice(index, index + chunkSize);
+    await execFileAsync2(
+      "git",
+      ["rm", "--cached", "--ignore-unmatch", "--", ...chunk],
+      {
+        cwd: directoryPath,
+        maxBuffer: 1024 * 1024,
+        windowsHide: true
+      }
+    );
+  }
+}
+async function readOptionalFile(filePath) {
+  try {
+    return await import_node_fs3.promises.readFile(filePath, "utf8");
+  } catch (error) {
+    if (typeof error === "object" && error && "code" in error && error.code === "ENOENT") {
+      return "";
+    }
+    throw error;
+  }
+}
+function isFalseYamlValue(rawValue) {
+  const normalizedValue = rawValue.replace(/\s+#.*$/, "").trim().toLowerCase();
+  return normalizedValue === "false" || normalizedValue === '"false"' || normalizedValue === "'false'";
+}
+function toGitRelativePath(rootDirectory, filePath) {
+  return path2.relative(rootDirectory, filePath).split(path2.sep).join("/");
+}
+function escapeGitIgnorePattern(value) {
+  return value.replace(/([*?[\\])/g, "\\$1");
+}
+
+// wikiPathUpdater.ts
+var import_node_fs4 = require("node:fs");
+var path3 = __toESM(require("node:path"));
 async function updateWikiPathPropertiesInDirectory(directoryPath, options) {
   const markdownFiles = await collectMarkdownFiles(directoryPath);
   const changedRelativePaths = [];
   for (const filePath of markdownFiles) {
-    const originalContent = await import_node_fs3.promises.readFile(filePath, "utf8");
+    const originalContent = await import_node_fs4.promises.readFile(filePath, "utf8");
     const wikiPath = toWikiPath(directoryPath, filePath);
     const updatedContent = updateWikiPathProperty(originalContent, wikiPath);
     if (updatedContent === originalContent) {
       continue;
     }
     if (options.writeChanges) {
-      await import_node_fs3.promises.writeFile(filePath, updatedContent, "utf8");
+      await import_node_fs4.promises.writeFile(filePath, updatedContent, "utf8");
     }
-    changedRelativePaths.push(path2.relative(directoryPath, filePath));
+    changedRelativePaths.push(path3.relative(directoryPath, filePath));
   }
   return {
     scannedFiles: markdownFiles.length,
@@ -1067,9 +1232,9 @@ function updateWikiPathProperty(content, wikiPath) {
   return lines.join("\n").replace(/\n/g, lineEnding);
 }
 function toWikiPath(rootDirectory, filePath) {
-  const relativePath = path2.relative(rootDirectory, filePath);
+  const relativePath = path3.relative(rootDirectory, filePath);
   const withoutExtension = relativePath.replace(/\.md$/i, "");
-  return withoutExtension.split(path2.sep).join("/");
+  return withoutExtension.split(path3.sep).join("/");
 }
 function escapeYamlDoubleQuotedString(value) {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -1166,7 +1331,7 @@ var UtemaPublishPlugin = class extends import_obsidian3.Plugin {
       new import_obsidian3.Notice("Impossible de d\xE9terminer le chemin local du vault.");
       return;
     }
-    const publishDirectory = path3.join(vaultBasePath, (0, import_obsidian3.normalizePath)(publishFolder));
+    const publishDirectory = path4.join(vaultBasePath, (0, import_obsidian3.normalizePath)(publishFolder));
     console.info("[UTEMA Sync] Starting sync", {
       publishDirectory,
       syncTarget: this.settings.syncTarget,
@@ -1185,6 +1350,12 @@ var UtemaPublishPlugin = class extends import_obsidian3.Plugin {
         changedRelativePaths: []
       };
       const wikiPathSummary = await updateWikiPathPropertiesInDirectory(
+        publishDirectory,
+        {
+          writeChanges: !this.settings.dryRun
+        }
+      );
+      const publishFilterSummary = await applyPublishFilter(
         publishDirectory,
         {
           writeChanges: !this.settings.dryRun
@@ -1210,17 +1381,18 @@ var UtemaPublishPlugin = class extends import_obsidian3.Plugin {
       console.info("[UTEMA Sync] Sync summary", {
         conversionSummary,
         wikiPathSummary,
+        publishFilterSummary,
         localGitSummary,
         remoteSyncResults
       });
-      if (!localGitSummary.hadChanges && !hadRemoteChanges && failedRemoteSyncs.length === 0) {
-        new import_obsidian3.Notice("Aucun changement \xE0 synchroniser.");
-        return;
-      }
       if (this.settings.dryRun) {
         new import_obsidian3.Notice(
-          `Dry run termin\xE9. ${conversionSummary.changedFiles} fichier(s) converti(s), ${wikiPathSummary.changedFiles} wiki-path v\xE9rifi\xE9(s), ${successfulRemoteSyncs.length} repo(s) v\xE9rifi\xE9(s).`
+          `Dry run termin\xE9. ${conversionSummary.changedFiles} fichier(s) converti(s), ${wikiPathSummary.changedFiles} wiki-path v\xE9rifi\xE9(s), ${publishFilterSummary.excludedFiles} fichier(s) non publiable(s), ${successfulRemoteSyncs.length} repo(s) v\xE9rifi\xE9(s).`
         );
+        return;
+      }
+      if (!localGitSummary.hadChanges && !hadRemoteChanges && failedRemoteSyncs.length === 0) {
+        new import_obsidian3.Notice("Aucun changement \xE0 synchroniser.");
         return;
       }
       if (failedRemoteSyncs.length > 0) {
@@ -1247,7 +1419,7 @@ var UtemaPublishPlugin = class extends import_obsidian3.Plugin {
       new import_obsidian3.Notice("Impossible de d\xE9terminer le chemin local du vault.");
       return;
     }
-    const publishDirectory = path3.join(vaultBasePath, (0, import_obsidian3.normalizePath)(publishFolder));
+    const publishDirectory = path4.join(vaultBasePath, (0, import_obsidian3.normalizePath)(publishFolder));
     try {
       await ensureExistingDirectory(publishDirectory);
       const conversionSummary = await convertMarkdownLinksToObsidianInDirectory(
@@ -1277,6 +1449,7 @@ var UtemaPublishPlugin = class extends import_obsidian3.Plugin {
   }
   async syncSelectedRepositories(publishDirectory, shouldPushLocalChanges) {
     const repositories = this.getSelectedRepositories();
+    const pushMode = repositories.length > 1 ? "explicit" : this.settings.pushMode;
     const results = [];
     let shouldPushToRemainingRepositories = shouldPushLocalChanges;
     for (const repository of repositories) {
@@ -1287,7 +1460,7 @@ var UtemaPublishPlugin = class extends import_obsidian3.Plugin {
           branchName: repository.settings.branchName.trim() || DEFAULT_SETTINGS.repositories[repository.key].branchName,
           repoUrl: repository.settings.repoUrl.trim(),
           sshKeyPath: repository.settings.sshKeyPath.trim(),
-          pushMode: this.settings.pushMode,
+          pushMode,
           dryRun: this.settings.dryRun,
           shouldPushLocalChanges: shouldPushToRemainingRepositories
         });
@@ -1393,7 +1566,7 @@ var FolderSelectionModal = class extends import_obsidian3.FuzzySuggestModal {
 async function ensureExistingDirectory(directoryPath) {
   let stats;
   try {
-    stats = await import_node_fs4.promises.stat(directoryPath);
+    stats = await import_node_fs5.promises.stat(directoryPath);
   } catch {
     throw new Error(`Le dossier cible est introuvable: ${directoryPath}`);
   }
